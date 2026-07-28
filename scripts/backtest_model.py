@@ -18,6 +18,7 @@ from boatrace_predictor.backtest.evaluate import (
 )
 from boatrace_predictor.config import STADIUMS, settings
 from boatrace_predictor.features.dataset import build_dataset
+from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
 from boatrace_predictor.models.scoring import predict_win_probability, train
 from boatrace_predictor.persistence.db import engine
 
@@ -28,6 +29,10 @@ def main() -> None:
 
     df = df[df["is_normal_finish"]].reset_index(drop=True)
     train_df, test_df = time_based_split(df, train_frac=0.7)
+
+    encodings = fit_course_encodings(train_df)
+    train_df = apply_course_encodings(train_df, encodings)
+    test_df = apply_course_encodings(test_df, encodings)
 
     train_dates = (train_df["date"].min(), train_df["date"].max())
     test_dates = (test_df["date"].min(), test_df["date"].max())

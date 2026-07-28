@@ -15,6 +15,7 @@ from boatrace_predictor.backtest.evaluate import (
 )
 from boatrace_predictor.config import settings
 from boatrace_predictor.features.dataset import build_dataset
+from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
 from boatrace_predictor.models import ranking, scoring
 from boatrace_predictor.persistence.db import engine
 
@@ -34,6 +35,12 @@ def main() -> None:
         df = build_dataset(session, stadium_numbers=settings.target_stadiums)
         df = df[df["is_normal_finish"]].reset_index(drop=True)
         train_df, test_df = time_based_split(df, train_frac=0.7)
+
+        # 会場×コース・選手×コースの勝率は学習期間だけから作り、検証期間にも同じ統計を適用する
+        # (テストデータの結果を学習に混ぜない)
+        encodings = fit_course_encodings(train_df)
+        train_df = apply_course_encodings(train_df, encodings)
+        test_df = apply_course_encodings(test_df, encodings)
 
         print(f"検証レース数: {test_df['race_id'].nunique()}\n")
 
