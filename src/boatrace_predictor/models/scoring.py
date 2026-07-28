@@ -39,6 +39,9 @@ NUMERIC_FEATURES = [
     "wave_height",
     "air_temperature",
     "water_temperature",
+    "tide_level_cm",
+    "tide_trend_cm_per_hour",
+    "moon_age",
 ]
 
 CATEGORICAL_FEATURES = [
@@ -46,6 +49,7 @@ CATEGORICAL_FEATURES = [
     "stadium_number",
     "weather_number",
     "wind_direction_number",
+    "tide_name",
 ]
 
 

@@ -113,6 +113,21 @@ class ResultEntry(SQLModel, table=True):
     racer_name: str | None = None
 
 
+class TideDaily(SQLModel, table=True):
+    """1日1会場分の潮汐データ。20分おきの潮位カーブはJSON文字列で持つ
+    (レース時刻の潮位・変化率は特徴量生成時に補間して計算する)。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    date: str = Field(index=True)  # YYYY-MM-DD
+    stadium_number: int = Field(index=True)
+
+    tide_name: str | None = None  # 潮名: 大潮/中潮/小潮/長潮/若潮
+    moon_age: float | None = None
+    curve_json: str  # [{"time": "00:00", "cm": 131.9}, ...] のJSON文字列
+
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+
 class Payout(SQLModel, table=True):
     """舟券種別ごとの払戻金。bet_type: trifecta/trio/exacta/quinella/quinella_place/win/place"""
 

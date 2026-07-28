@@ -47,5 +47,15 @@ class Settings(BaseSettings):
     # 天候/波の効果を検証するには対照的な2場にした方が差が出やすい
     target_stadiums: list[int] = [24, 3]
 
+    tide_api_base_url: str = "https://tide736.net/api/get_tide.php"
+
+
+# 場コード -> 潮汐736 API の(都道府県コード, 港コード)。
+# 江戸川は競艇場に隣接する河口(市川)、大村は競艇場と同じ大村湾の観測点を採用。
+STADIUM_TIDE_STATIONS: dict[int, tuple[int, int]] = {
+    24: (42, 50),  # 大村(長崎県, 大村)
+    3: (12, 17),  # 江戸川(千葉県, 市川)
+}
+
 
 settings = Settings()

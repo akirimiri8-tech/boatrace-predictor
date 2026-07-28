@@ -1,9 +1,12 @@
 """DBエンジン/セッションとデータ保存ロジック。"""
 
+import json
+
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from boatrace_predictor.config import settings
 from boatrace_predictor.data.schemas import RaceProgram
+from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
     Payout,
     PreviewEntry,
@@ -12,6 +15,7 @@ from boatrace_predictor.persistence.models import (
     RacerEntry,
     RaceWeather,
     ResultEntry,
+    TideDaily,
 )
 
 settings.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,3 +179,24 @@ def save_race(session: Session, race: RaceProgram) -> None:
                             amount=entry["amount"],
                         )
                     )
+
+
+def save_tide_day(session: Session, date: str, stadium_number: int, chart: DayChart) -> None:
+    existing = session.exec(
+        select(TideDaily).where(
+            TideDaily.date == date, TideDaily.stadium_number == stadium_number
+        )
+    ).first()
+    if existing:
+        session.delete(existing)
+        session.flush()
+
+    session.add(
+        TideDaily(
+            date=date,
+            stadium_number=stadium_number,
+            tide_name=chart.moon.title,
+            moon_age=chart.moon.age,
+            curve_json=json.dumps([p.model_dump() for p in chart.tide]),
+        )
+    )

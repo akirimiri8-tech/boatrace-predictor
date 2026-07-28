@@ -48,6 +48,10 @@ def _synthetic_dataset(n_races: int = 150, seed: int = 0) -> pd.DataFrame:
                     "wind_direction_number": 1,
                     "air_temperature": rng.uniform(15, 30),
                     "water_temperature": rng.uniform(15, 28),
+                    "tide_level_cm": rng.uniform(50, 200),
+                    "tide_trend_cm_per_hour": rng.uniform(-30, 30),
+                    "tide_name": rng.choice(["大潮", "中潮", "小潮", "長潮", "若潮"]),
+                    "moon_age": rng.uniform(0, 29),
                     "place_number": places[boat],
                 }
             )

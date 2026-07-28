@@ -8,6 +8,9 @@
 すべて0にし、is_abnormal_finish で区別できるようにしている。
 """
 
+import json
+from datetime import datetime
+
 import pandas as pd
 from sqlmodel import Session, select
 
@@ -19,9 +22,40 @@ from boatrace_predictor.persistence.models import (
     RacerEntry,
     RaceWeather,
     ResultEntry,
+    TideDaily,
 )
 
 _NORMAL_PLACES = {1, 2, 3, 4, 5, 6}
+
+
+def _parse_hhmm_minutes(t: str) -> int:
+    h, m = t.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _tide_level_at(curve: list[dict], minutes: float) -> float | None:
+    """潮位カーブ(20分間隔)から線形補間で任意時刻の潮位(cm)を求める。"""
+    if not curve:
+        return None
+    points = sorted((_parse_hhmm_minutes(p["time"]), p["cm"]) for p in curve)
+    if minutes <= points[0][0]:
+        return points[0][1]
+    if minutes >= points[-1][0]:
+        return points[-1][1]
+    for (t0, v0), (t1, v1) in zip(points, points[1:]):
+        if t0 <= minutes <= t1:
+            frac = (minutes - t0) / (t1 - t0)
+            return v0 + frac * (v1 - v0)
+    return None
+
+
+def _tide_trend_at(curve: list[dict], minutes: float, window_minutes: float = 60) -> float | None:
+    """潮位の変化率(cm/時)。プラスなら上げ潮、マイナスなら下げ潮で、流れの強さの目安になる。"""
+    before = _tide_level_at(curve, minutes - window_minutes / 2)
+    after = _tide_level_at(curve, minutes + window_minutes / 2)
+    if before is None or after is None:
+        return None
+    return (after - before) / (window_minutes / 60)
 
 
 def _win_payouts_by_boat(session: Session, race_id: int) -> dict[int, int]:
@@ -69,6 +103,22 @@ def build_race_features(session: Session, race_id: int) -> pd.DataFrame:
         ).all()
     }
     win_payouts = _win_payouts_by_boat(session, race_id)
+
+    tide_daily = session.exec(
+        select(TideDaily).where(
+            TideDaily.date == race.date, TideDaily.stadium_number == race.stadium_number
+        )
+    ).first()
+    tide_level_cm = None
+    tide_trend_cm_per_hour = None
+    tide_name = tide_daily.tide_name if tide_daily else None
+    moon_age = tide_daily.moon_age if tide_daily else None
+    if tide_daily and race.closed_at:
+        curve = json.loads(tide_daily.curve_json)
+        closed_at = datetime.strptime(race.closed_at, "%Y-%m-%d %H:%M:%S")
+        minutes = closed_at.hour * 60 + closed_at.minute
+        tide_level_cm = _tide_level_at(curve, minutes)
+        tide_trend_cm_per_hour = _tide_trend_at(curve, minutes)
 
     # 展示タイム・展示ST・全国勝率は艇間の相対順位が効くので先に集計しておく
     exhibition_times = {
@@ -165,6 +215,11 @@ def build_race_features(session: Session, race_id: int) -> pd.DataFrame:
                 "water_temperature": (
                     preview_weather.water_temperature if preview_weather else None
                 ),
+                # 潮汐(天文推算値、レース発走時刻に線形補間)
+                "tide_level_cm": tide_level_cm,
+                "tide_trend_cm_per_hour": tide_trend_cm_per_hour,
+                "tide_name": tide_name,
+                "moon_age": moon_age,
                 # 結果(target)
                 "place_number": place,
                 "is_normal_finish": is_normal,
