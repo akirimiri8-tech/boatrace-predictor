@@ -1,0 +1,72 @@
+import numpy as np
+import pandas as pd
+
+from boatrace_predictor.models.ranking import predict_scores, train_ranker
+
+
+def _synthetic_dataset(n_races: int = 150, seed: int = 0) -> pd.DataFrame:
+    """コース番号が小さいほど着順が良くなる(1着に近い)構造を持つ合成データ。"""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for race_id in range(n_races):
+        # コースの強さに乱数ノイズを乗せて着順を決める(コース1が有利だが確実ではない)
+        strength = np.array([6, 5, 4, 3, 2, 1], dtype=float) + rng.normal(0, 1.5, size=6)
+        place_order = np.argsort(-strength) + 1  # 艇番(1-6)を強い順に並べた配列
+        places = {boat: rank + 1 for rank, boat in enumerate(place_order)}
+
+        for boat in range(1, 7):
+            rows.append(
+                {
+                    "race_id": race_id,
+                    "racer_boat_number": boat,
+                    "course_number": boat,
+                    "stadium_number": 24,
+                    "age": rng.integers(20, 60),
+                    "weight": rng.uniform(45, 60),
+                    "flying_count": 0,
+                    "late_count": 0,
+                    "average_start_timing": rng.uniform(0.1, 0.2),
+                    "national_win_rate": rng.uniform(3, 7),
+                    "national_top2_rate": rng.uniform(20, 50),
+                    "national_top3_rate": rng.uniform(30, 60),
+                    "local_win_rate": rng.uniform(3, 7),
+                    "local_top2_rate": rng.uniform(20, 50),
+                    "local_top3_rate": rng.uniform(30, 60),
+                    "motor_top2_rate": rng.uniform(20, 50),
+                    "motor_top3_rate": rng.uniform(30, 60),
+                    "boat_top2_rate": rng.uniform(20, 50),
+                    "boat_top3_rate": rng.uniform(30, 60),
+                    "exhibition_time": rng.uniform(6.5, 7.0),
+                    "exhibition_time_rank": boat,
+                    "preview_start_timing": rng.uniform(0.05, 0.25),
+                    "preview_start_timing_rank": boat,
+                    "tilt_adjustment": rng.choice([-0.5, 0, 0.5]),
+                    "weight_adjustment": rng.uniform(0, 2),
+                    "wind_speed": rng.integers(0, 8),
+                    "wave_height": rng.integers(0, 5),
+                    "weather_number": 1,
+                    "wind_direction_number": 1,
+                    "air_temperature": rng.uniform(15, 30),
+                    "water_temperature": rng.uniform(15, 28),
+                    "place_number": places[boat],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_train_ranker_scores_have_expected_shape() -> None:
+    df = _synthetic_dataset()
+    preprocessor, ranker = train_ranker(df)
+    scores = predict_scores(preprocessor, ranker, df)
+
+    assert len(scores) == len(df)
+    assert scores.notna().all()
+
+
+def test_ranker_prefers_course_1_on_average() -> None:
+    df = _synthetic_dataset()
+    preprocessor, ranker = train_ranker(df)
+    scores = predict_scores(preprocessor, ranker, df)
+
+    avg_score_by_course = df.assign(s=scores).groupby("course_number")["s"].mean()
+    assert avg_score_by_course.idxmax() == 1
