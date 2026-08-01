@@ -103,8 +103,18 @@ scripts/
 ├── baseline_stats.py     # 「1コースが1着」ベースラインの的中率・回収率
 ├── backtest_model.py      # ロジスティック回帰モデルの時系列バックテスト
 ├── bet_type_efficiency.py  # 券種別ROI比較
-└── compare_models.py       # ロジスティック回帰 vs LightGBMランキングの比較
+├── compare_models.py       # ロジスティック回帰 vs LightGBMランキングの比較
+├── daily_predict.py         # 当日の予想をログ保存(日次運用ループ)
+└── daily_report.py           # 予想ログと結果を突き合わせて集計
+run_daily_predict.bat / run_daily_report.bat  # 上記2つのWindowsタスクスケジューラ用ラッパー
 ```
+
+**日次自動実行**(2026-08-01設定): Windowsタスクスケジューラに登録済み。
+- `BoatracePredictor_DailyPredict`: 毎日09:00(レース開始前)に`daily_predict.py`実行
+- `BoatracePredictor_DailyReport`: 毎日22:00(その日のレース終了後)に`daily_report.py`実行
+- ログは `logs/daily_predict.log` / `logs/daily_report.log` に追記される
+- 確認/削除: `schtasks /query /tn "BoatracePredictor_DailyPredict"` /
+  `schtasks /delete /tn "BoatracePredictor_DailyPredict" /f`
 
 **レイヤー間のルール**: `data` → `persistence` → `features` → `models` → `backtest`。
 上位レイヤーは下位レイヤーを呼ぶが、逆はNG。
