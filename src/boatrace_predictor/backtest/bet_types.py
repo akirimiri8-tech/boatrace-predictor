@@ -79,6 +79,16 @@ def evaluate_bet_types(
     session: Session, df: pd.DataFrame, predicted_prob: pd.Series
 ) -> list[BetTypeResult]:
     order = _predicted_order(df, predicted_prob)
+    return evaluate_bet_types_from_order(session, order)
+
+
+def evaluate_bet_types_from_order(
+    session: Session, order: dict[int, list[int]]
+) -> list[BetTypeResult]:
+    """race_id -> 予想順位(艇番のリスト、1着予想から順)のマッピングから券種別に評価する。
+
+    daily_predict.pyでログした実際の予想(Predictionテーブル)を評価する際にも使う。
+    """
     payouts = _payouts_by_race(session, list(order.keys()))
 
     results = []

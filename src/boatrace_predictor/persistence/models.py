@@ -137,3 +137,30 @@ class Payout(SQLModel, table=True):
     bet_type: str
     combination: str
     amount: int
+
+
+class Prediction(SQLModel, table=True):
+    """日次運用ループでの予想ログ。結果が出る前(発走前)に保存し、後から
+    ResultEntry/Payoutと突き合わせて的中率・回収率を評価する。
+    同じレース・同じモデルで複数回予想した場合は最新のものだけ残す。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    predicted_at: str  # ISO8601タイムスタンプ(いつ予想したか)
+    model_name: str  # 例: "logistic_regression"
+
+    predicted_1st: int
+    predicted_2nd: int | None = None
+    predicted_3rd: int | None = None
+
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+
+class PredictionScore(SQLModel, table=True):
+    """予想時点での艇ごとのスコア(1着確率など)。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    prediction_id: int = Field(foreign_key="prediction.id", index=True)
+
+    racer_boat_number: int
+    score: float

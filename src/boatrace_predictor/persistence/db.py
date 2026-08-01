@@ -9,6 +9,8 @@ from boatrace_predictor.data.schemas import RaceProgram
 from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
     Payout,
+    Prediction,
+    PredictionScore,
     PreviewEntry,
     PreviewWeather,
     Race,
@@ -48,8 +50,8 @@ def _replace(session: Session, model: type, race_id: int) -> None:
     session.flush()
 
 
-def save_race(session: Session, race: RaceProgram) -> None:
-    """1レース分(出走表+直前情報+結果)をまとめて保存する。
+def save_race(session: Session, race: RaceProgram) -> int:
+    """1レース分(出走表+直前情報+結果)をまとめて保存し、race_idを返す。
 
     既存データがあれば置き換える(番組変更・直前情報確定・結果確定のたびに
     同じレースを再取得して上書きする運用を想定)。
@@ -180,6 +182,8 @@ def save_race(session: Session, race: RaceProgram) -> None:
                         )
                     )
 
+    return race_id
+
 
 def save_tide_day(session: Session, date: str, stadium_number: int, chart: DayChart) -> None:
     existing = session.exec(
@@ -200,3 +204,44 @@ def save_tide_day(session: Session, date: str, stadium_number: int, chart: DayCh
             curve_json=json.dumps([p.model_dump() for p in chart.tide]),
         )
     )
+
+
+def save_prediction(
+    session: Session,
+    race_id: int,
+    predicted_at: str,
+    model_name: str,
+    ranked_boats: list[int],
+    scores: dict[int, float],
+) -> Prediction:
+    """レース1件分の予想をログに保存する。同モデル・同レースの古い予想は削除して置き換える。"""
+    existing = session.exec(
+        select(Prediction).where(
+            Prediction.race_id == race_id, Prediction.model_name == model_name
+        )
+    ).all()
+    for old in existing:
+        old_scores = session.exec(
+            select(PredictionScore).where(PredictionScore.prediction_id == old.id)
+        ).all()
+        for s in old_scores:
+            session.delete(s)
+        session.delete(old)
+    session.flush()
+
+    prediction = Prediction(
+        race_id=race_id,
+        predicted_at=predicted_at,
+        model_name=model_name,
+        predicted_1st=ranked_boats[0],
+        predicted_2nd=ranked_boats[1] if len(ranked_boats) > 1 else None,
+        predicted_3rd=ranked_boats[2] if len(ranked_boats) > 2 else None,
+    )
+    session.add(prediction)
+    session.flush()
+
+    for boat, score in scores.items():
+        session.add(
+            PredictionScore(prediction_id=prediction.id, racer_boat_number=boat, score=score)
+        )
+    return prediction
