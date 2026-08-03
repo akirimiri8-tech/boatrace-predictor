@@ -109,12 +109,20 @@ scripts/
 run_daily_predict.bat / run_daily_report.bat  # 上記2つのWindowsタスクスケジューラ用ラッパー
 ```
 
-**日次自動実行**(2026-08-01設定): Windowsタスクスケジューラに登録済み。
-- `BoatracePredictor_DailyPredict`: 毎日09:00(レース開始前)に`daily_predict.py`実行
+**日次自動実行**(2026-08-01設定、2026-08-03に実行頻度を修正): Windowsタスクスケジューラに登録済み。
+- `BoatracePredictor_DailyPredict`: 毎日09:00〜21:00、**30分おきに繰り返し**`daily_predict.py`実行。
+  1日1回だと午後以降のレースの直前情報がまだ確定前で予想してしまう問題があったため
+  (2026-08-03、常滑7Rの予想が再現できない事象から判明)、細かく繰り返す方式に変更。
+  `daily_predict.py`は発走済み(closed_at経過)レースをデフォルトでスキップするので、
+  同じレースを重ねて実行しても無駄打ちにはならない
 - `BoatracePredictor_DailyReport`: 毎日22:00(その日のレース終了後)に`daily_report.py`実行
 - ログは `logs/daily_predict.log` / `logs/daily_report.log` に追記される
 - 確認/削除: `schtasks /query /tn "BoatracePredictor_DailyPredict"` /
   `schtasks /delete /tn "BoatracePredictor_DailyPredict" /f`
+- **注意**: タスクのLogonTypeはInteractive(ユーザーログオン時のみ実行)。PCスリープからの
+  復帰直後に実行タイミングが重なると失敗することがある(2026-08-03に発生、原因調査済み)。
+  `StartWhenAvailable`は有効にしてあるので、いずれかの回で拾えれば大きな問題にはならない。
+  より堅牢にするには管理者権限でLogonTypeをS4U(非対話型)に変更する必要がある(未実施)
 
 **レイヤー間のルール**: `data` → `persistence` → `features` → `models` → `backtest`。
 上位レイヤーは下位レイヤーを呼ぶが、逆はNG。
