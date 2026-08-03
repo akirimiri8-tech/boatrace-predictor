@@ -4,9 +4,20 @@
 前の結果データだけでモデルを学習するので、未来のデータを混ぜていない。
 翌日以降に scripts/daily_report.py で結果と突き合わせて精度を確認する。
 
+発走時刻(closed_at)を過ぎたレースはデフォルトでスキップする。直前情報は
+API側で発走後にも更新されることがあり、発走済みレースに対して予想を作ると
+「本当にレース前に分かっていた情報」ではなくなってしまうため
+(2026-08-03、7Rの予想が再現できない問題が発生して判明)。
+過去日を指定して研究目的で無理やり予想を作りたい場合は --allow-finished を使う。
+
+このスクリプトは1日1回ではなく、レース開催中は30分〜1時間おきに繰り返し
+実行する運用を想定している(1回で全レース分の直前情報が揃うわけではないため)。
+既に予想済みのレースは再度上書きされる(直前情報が更新され次第、最新の内容で
+上書きする設計)。
+
 使い方:
     python scripts/daily_predict.py
-    python scripts/daily_predict.py --date 2026-07-29
+    python scripts/daily_predict.py --date 2026-07-29 --allow-finished
 """
 
 import argparse
@@ -23,7 +34,12 @@ from boatrace_predictor.config import STADIUMS, settings
 from boatrace_predictor.data.client import BoatraceOpenAPIClient
 from boatrace_predictor.features.dataset import build_dataset, build_race_features
 from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
-from boatrace_predictor.models.scoring import predict_win_probability, train
+from boatrace_predictor.models.scoring import (
+    CATEGORICAL_FEATURES,
+    NUMERIC_FEATURES,
+    predict_win_probability,
+    train,
+)
 from boatrace_predictor.persistence.db import engine, init_db, save_prediction, save_race
 
 MODEL_NAME = "logistic_regression"  # 単勝/複勝が主指標という方針上、こちらを正式運用に採用
@@ -33,6 +49,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=None, help="YYYY-MM-DD(未指定なら本日)")
     parser.add_argument("--stadiums", type=int, nargs="*", default=settings.target_stadiums)
+    parser.add_argument(
+        "--allow-finished",
+        action="store_true",
+        help="発走済みレースも予想対象にする(研究目的の過去日再現用。通常は使わない)",
+    )
     args = parser.parse_args()
 
     target_date = date.fromisoformat(args.date) if args.date else date.today()
@@ -73,10 +94,18 @@ def main() -> None:
             race_ids[(race.stadium_number, race.race_number)] = race_id
         session.commit()
 
-        # 3. レースごとに予想してログ保存
-        predicted_at = datetime.now().isoformat(timespec="seconds")
+        # 3. レースごとに予想してログ保存(発走済みは原則スキップ)
+        now = datetime.now()
+        predicted_at = now.isoformat(timespec="seconds")
         n_predicted = 0
+        n_skipped_finished = 0
         for race in races:
+            if race.closed_at and not args.allow_finished:
+                closed_at = datetime.strptime(race.closed_at, "%Y-%m-%d %H:%M:%S")
+                if closed_at <= now:
+                    n_skipped_finished += 1
+                    continue
+
             race_id = race_ids[(race.stadium_number, race.race_number)]
             df = build_race_features(session, race_id)
             if df["national_win_rate"].isna().all():
@@ -90,7 +119,12 @@ def main() -> None:
                 .tolist()
             )
             scores = dict(zip(df["racer_boat_number"], probs))
-            save_prediction(session, race_id, predicted_at, MODEL_NAME, ranked, scores)
+            features_snapshot = df[
+                ["racer_boat_number"] + NUMERIC_FEATURES + CATEGORICAL_FEATURES
+            ].to_dict("records")
+            save_prediction(
+                session, race_id, predicted_at, MODEL_NAME, ranked, scores, features_snapshot
+            )
             n_predicted += 1
 
             name = STADIUMS[race.stadium_number]
@@ -101,7 +135,10 @@ def main() -> None:
             )
         session.commit()
 
-        logger.info(f"完了: {n_predicted}レース分の予想を保存")
+        logger.info(
+            f"完了: {n_predicted}レース分の予想を保存"
+            f"(発走済みでスキップ: {n_skipped_finished}件)"
+        )
 
 
 if __name__ == "__main__":

@@ -213,8 +213,12 @@ def save_prediction(
     model_name: str,
     ranked_boats: list[int],
     scores: dict[int, float],
+    features_snapshot: list[dict] | None = None,
 ) -> Prediction:
-    """レース1件分の予想をログに保存する。同モデル・同レースの古い予想は削除して置き換える。"""
+    """レース1件分の予想をログに保存する。同モデル・同レースの古い予想は削除して置き換える。
+
+    features_snapshot: 予想に使った6艇分の生の特徴量(監査用)。省略可。
+    """
     existing = session.exec(
         select(Prediction).where(
             Prediction.race_id == race_id, Prediction.model_name == model_name
@@ -236,6 +240,7 @@ def save_prediction(
         predicted_1st=ranked_boats[0],
         predicted_2nd=ranked_boats[1] if len(ranked_boats) > 1 else None,
         predicted_3rd=ranked_boats[2] if len(ranked_boats) > 2 else None,
+        features_json=json.dumps(features_snapshot) if features_snapshot is not None else None,
     )
     session.add(prediction)
     session.flush()

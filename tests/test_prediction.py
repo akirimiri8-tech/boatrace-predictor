@@ -1,3 +1,5 @@
+import json
+
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from boatrace_predictor.backtest.bet_types import evaluate_bet_types_from_order
@@ -56,6 +58,28 @@ def test_save_prediction_replaces_previous_prediction_for_same_race_and_model() 
         predictions = session.exec(select(Prediction)).all()
         assert len(predictions) == 1
         assert predictions[0].predicted_1st == 2
+
+
+def test_save_prediction_stores_features_snapshot() -> None:
+    engine, race_id = _engine_with_race_and_payout()
+    snapshot = [
+        {"racer_boat_number": 1, "exhibition_time": 6.7, "course_number": 1},
+        {"racer_boat_number": 2, "exhibition_time": 6.8, "course_number": 2},
+    ]
+    with Session(engine) as session:
+        save_prediction(
+            session,
+            race_id=race_id,
+            predicted_at="2026-07-29T09:00:00",
+            model_name="logistic_regression",
+            ranked_boats=[1, 2],
+            scores={1: 0.6, 2: 0.4},
+            features_snapshot=snapshot,
+        )
+        session.commit()
+
+        prediction = session.exec(select(Prediction)).one()
+        assert json.loads(prediction.features_json) == snapshot
 
 
 def test_evaluate_bet_types_from_order_matches_win_payout() -> None:

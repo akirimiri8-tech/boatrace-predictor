@@ -142,7 +142,13 @@ class Payout(SQLModel, table=True):
 class Prediction(SQLModel, table=True):
     """日次運用ループでの予想ログ。結果が出る前(発走前)に保存し、後から
     ResultEntry/Payoutと突き合わせて的中率・回収率を評価する。
-    同じレース・同じモデルで複数回予想した場合は最新のものだけ残す。"""
+    同じレース・同じモデルで複数回予想した場合は最新のものだけ残す。
+
+    features_json: 予想時点で実際にモデルに入力した6艇分の特徴量(NUMERIC_FEATURES
+    + CATEGORICAL_FEATURES)をそのままJSON保存する。直前情報は後からAPI側の
+    データが更新されることがあり、DBの現在値だけでは「予想した瞬間に何を見て
+    いたか」を再現できないため、監査用にスナップショットを残す
+    (2026-08-03、7Rの予想が再現できなかった問題を踏まえて追加)。"""
 
     id: int | None = Field(default=None, primary_key=True)
     race_id: int = Field(foreign_key="race.id", index=True)
@@ -152,6 +158,7 @@ class Prediction(SQLModel, table=True):
     predicted_1st: int
     predicted_2nd: int | None = None
     predicted_3rd: int | None = None
+    features_json: str | None = None
 
     __table_args__ = ({"sqlite_autoincrement": True},)
 
