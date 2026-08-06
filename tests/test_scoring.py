@@ -21,6 +21,8 @@ def _synthetic_dataset(n_races: int = 200, seed: int = 0) -> pd.DataFrame:
                     "race_number": 1,
                     "racer_boat_number": boat,
                     "course_number": boat,
+                    "class_number": rng.choice([1, 2, 3, 4]),
+                    "water_type": rng.choice(["海水", "汽水", "淡水"]),
                     "age": rng.integers(20, 60),
                     "weight": rng.uniform(45, 60),
                     "flying_count": 0,

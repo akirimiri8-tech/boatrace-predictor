@@ -14,6 +14,7 @@ from datetime import datetime
 import pandas as pd
 from sqlmodel import Session, select
 
+from boatrace_predictor.config import STADIUM_WATER_TYPE
 from boatrace_predictor.persistence.models import (
     Payout,
     PreviewEntry,
@@ -147,6 +148,7 @@ def build_race_features(session: Session, race_id: int) -> pd.DataFrame:
                 "race_id": race_id,
                 "date": race.date,
                 "stadium_number": race.stadium_number,
+                "water_type": STADIUM_WATER_TYPE.get(race.stadium_number),
                 "race_number": race.number,
                 "racer_boat_number": boat_number,
                 "course_number": (

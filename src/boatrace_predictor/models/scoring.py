@@ -54,6 +54,9 @@ CATEGORICAL_FEATURES = [
     "weather_number",
     "wind_direction_number",
     "tide_name",
+    "class_number",  # 選手級別(A1/A2/B1/B2)。実装当初から取得はしていたが特徴量に
+    # 使うのを忘れていた(2026-08-06、ユーザー指摘で発覚)
+    "water_type",  # 水質(海水/汽水/淡水)。塩分濃度で艇の浮力・スピードが変わる
 ]
 
 
