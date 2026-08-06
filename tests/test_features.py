@@ -42,6 +42,10 @@ def test_build_race_features_has_six_boats_and_expected_columns() -> None:
     ranks = sorted(df["exhibition_time_rank"].dropna().tolist())
     assert ranks == [1, 2, 3, 4, 5, 6]
 
+    # 1コース艇自身の引き波補正値は0になるはず(自分自身との差分のため)
+    course1_row = df[df["course_number"] == 1].iloc[0]
+    assert abs(course1_row["wake_adjusted_exhibition_time"]) < 1e-9
+
 
 def test_build_dataset_concatenates_all_races() -> None:
     engine = _engine_with_fixture_data()

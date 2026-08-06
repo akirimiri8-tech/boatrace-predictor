@@ -40,6 +40,8 @@ def _synthetic_dataset(n_races: int = 150, seed: int = 0) -> pd.DataFrame:
                     "boat_top3_rate": rng.uniform(30, 60),
                     "exhibition_time": rng.uniform(6.5, 7.0),
                     "exhibition_time_rank": boat,
+                    "wake_adjusted_exhibition_time": rng.uniform(-0.2, 0.2),
+                    "meet_trend_avg_place": rng.uniform(1, 6),
                     "preview_start_timing": rng.uniform(0.05, 0.25),
                     "preview_start_timing_rank": boat,
                     "tilt_adjustment": rng.choice([-0.5, 0, 0.5]),

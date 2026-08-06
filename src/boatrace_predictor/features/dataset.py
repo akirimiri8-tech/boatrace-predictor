@@ -9,7 +9,7 @@
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from sqlmodel import Session, select
@@ -27,6 +27,32 @@ from boatrace_predictor.persistence.models import (
 )
 
 _NORMAL_PLACES = {1, 2, 3, 4, 5, 6}
+_MEET_WINDOW_DAYS = 7  # 開催の境界を直接は持っていないので「同会場・直近7日以内」で近似
+
+
+def _meet_trend_avg_place(
+    session: Session, racer_number: int | None, stadium_number: int, before_date: str
+) -> float | None:
+    """今節(直近7日以内・同会場)の平均着順。値が小さいほど今節好調。"""
+    if racer_number is None:
+        return None
+    cutoff = (
+        datetime.strptime(before_date, "%Y-%m-%d") - timedelta(days=_MEET_WINDOW_DAYS)
+    ).strftime("%Y-%m-%d")
+    rows = session.exec(
+        select(ResultEntry.racer_place_number)
+        .join(Race, ResultEntry.race_id == Race.id)
+        .where(
+            ResultEntry.racer_number == racer_number,
+            Race.stadium_number == stadium_number,
+            Race.date >= cutoff,
+            Race.date < before_date,
+        )
+    ).all()
+    places = [p for p in rows if p in _NORMAL_PLACES]
+    if not places:
+        return None
+    return sum(places) / len(places)
 
 
 def _parse_hhmm_minutes(t: str) -> int:
@@ -129,6 +155,15 @@ def build_race_features(session: Session, race_id: int) -> pd.DataFrame:
     }
     exhibition_ranks = _rank(exhibition_times, ascending=True)  # 速いほど1位
 
+    # 引き波補正: 1コースの引き波を受ける2〜6コースの展示タイムは遅く出やすいので、
+    # 1コース艇との差分にして「引き波を差し引いてもなお速い/遅いか」を見る
+    course1_boat = next(
+        (b for b, e in preview_entries.items() if e.course_number == 1), None
+    )
+    course1_exhibition_time = (
+        exhibition_times.get(course1_boat) if course1_boat is not None else None
+    )
+
     preview_starts = {
         b: e.start_timing for b, e in preview_entries.items() if e.start_timing is not None
     }
@@ -193,6 +228,14 @@ def build_race_features(session: Session, race_id: int) -> pd.DataFrame:
                     preview_entry.exhibition_time if preview_entry else None
                 ),
                 "exhibition_time_rank": exhibition_ranks.get(boat_number),
+                "wake_adjusted_exhibition_time": (
+                    exhibition_times[boat_number] - course1_exhibition_time
+                    if boat_number in exhibition_times and course1_exhibition_time is not None
+                    else None
+                ),
+                "meet_trend_avg_place": _meet_trend_avg_place(
+                    session, racer.racer_number if racer else None, race.stadium_number, race.date
+                ),
                 "preview_start_timing": (
                     preview_entry.start_timing if preview_entry else None
                 ),

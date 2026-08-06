@@ -31,6 +31,8 @@ NUMERIC_FEATURES = [
     "boat_top3_rate",
     "exhibition_time",
     "exhibition_time_rank",
+    "wake_adjusted_exhibition_time",
+    "meet_trend_avg_place",
     "preview_start_timing",
     "preview_start_timing_rank",
     "tilt_adjustment",
