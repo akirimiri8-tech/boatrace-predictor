@@ -4,6 +4,10 @@ daily_predict.py で保存した予想のうち、結果が確定しているレ
 単勝・複勝を主指標にする方針(CLAUDE.md参照、2026-07-28決定)なので、
 多艇券種は参考値として表示するが的中数が少ないうちは判断材料にしない。
 
+--model のデフォルトは lightgbm_ranking(2026-08-06、本番モデルとして採用)。
+比較用に logistic_regression のログも並行して残っているので、
+--model logistic_regression で切り替えて見ることもできる。
+
 使い方:
     python scripts/daily_report.py
     python scripts/daily_report.py --start 2026-07-01 --end 2026-07-31
@@ -28,7 +32,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", default=None, help="YYYY-MM-DD")
     parser.add_argument("--end", default=None, help="YYYY-MM-DD")
-    parser.add_argument("--model", default="logistic_regression")
+    parser.add_argument("--model", default="lightgbm_ranking")
     args = parser.parse_args()
 
     with Session(engine) as session:

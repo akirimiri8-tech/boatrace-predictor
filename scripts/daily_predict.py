@@ -34,6 +34,7 @@ from boatrace_predictor.config import STADIUMS, settings
 from boatrace_predictor.data.client import BoatraceOpenAPIClient
 from boatrace_predictor.features.dataset import build_dataset, build_race_features
 from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
+from boatrace_predictor.models import ranking
 from boatrace_predictor.models.scoring import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
@@ -42,7 +43,20 @@ from boatrace_predictor.models.scoring import (
 )
 from boatrace_predictor.persistence.db import engine, init_db, save_prediction, save_race
 
-MODEL_NAME = "logistic_regression"  # 単勝/複勝が主指標という方針上、こちらを正式運用に採用
+# 2026-08-06: LightGBMランキングモデルに切り替え(単勝/複勝の回収率で
+# ロジスティック回帰を上回るようになったため)。ロジスティック回帰は
+# 比較用に引き続きログし続ける。PRIMARY_MODELの予想だけを標準出力に表示する。
+PRIMARY_MODEL = "lightgbm_ranking"
+
+
+def _fit_models(history):
+    """(model_name, predict_fn) のリストを返す。predict_fn(df) -> pd.Series[win_prob的なスコア]"""
+    logistic_model = train(history)
+    preprocessor, ranker = ranking.train_ranker(history)
+    return [
+        (PRIMARY_MODEL, lambda df: ranking.predict_scores(preprocessor, ranker, df)),
+        ("logistic_regression", lambda df: predict_win_probability(logistic_model, df)),
+    ]
 
 
 def main() -> None:
@@ -75,7 +89,7 @@ def main() -> None:
 
         encodings = fit_course_encodings(history)
         history = apply_course_encodings(history, encodings)
-        model = train(history)
+        models = _fit_models(history)
         logger.info(
             f"学習データ: {history['race_id'].nunique()}レース"
             f"({history['date'].min()}〜{history['date'].max()})"
@@ -111,27 +125,35 @@ def main() -> None:
             if df["national_win_rate"].isna().all():
                 continue  # 出走表自体が無い(会場コードの取り違え等)場合はスキップ
             df = apply_course_encodings(df, encodings)
-            probs = predict_win_probability(model, df)
-
-            ranked = (
-                df.assign(_score=probs)
-                .sort_values("_score", ascending=False)["racer_boat_number"]
-                .tolist()
-            )
-            scores = dict(zip(df["racer_boat_number"], probs))
             features_snapshot = df[
                 ["racer_boat_number"] + NUMERIC_FEATURES + CATEGORICAL_FEATURES
             ].to_dict("records")
-            save_prediction(
-                session, race_id, predicted_at, MODEL_NAME, ranked, scores, features_snapshot
-            )
+
+            primary_ranked = None
+            primary_scores = None
+            for model_name, predict_fn in models:
+                scores_series = predict_fn(df)
+                ranked = (
+                    df.assign(_score=scores_series)
+                    .sort_values("_score", ascending=False)["racer_boat_number"]
+                    .tolist()
+                )
+                scores = dict(zip(df["racer_boat_number"], scores_series))
+                save_prediction(
+                    session, race_id, predicted_at, model_name, ranked, scores, features_snapshot
+                )
+                if model_name == PRIMARY_MODEL:
+                    primary_ranked, primary_scores = ranked, scores
             n_predicted += 1
 
             name = STADIUMS[race.stadium_number]
+            # LightGBMランキングモデルのスコアは確率ではない(0〜1に収まらない生スコア)ので
+            # %表示はしない。ロジスティック回帰のような確率が欲しい場合は
+            # daily_report.py --model logistic_regression 側のログを見る
             print(
                 f"{race.date} {name} {race.race_number}R: "
-                f"予想 {ranked[0]}-{ranked[1]}-{ranked[2]} "
-                f"(1着確率: {scores[ranked[0]]:.1%})"
+                f"予想 {primary_ranked[0]}-{primary_ranked[1]}-{primary_ranked[2]} "
+                f"(1着スコア: {primary_scores[primary_ranked[0]]:.2f})"
             )
         session.commit()
 
