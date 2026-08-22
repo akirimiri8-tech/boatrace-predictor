@@ -171,3 +171,19 @@ class PredictionScore(SQLModel, table=True):
 
     racer_boat_number: int
     score: float
+
+
+class Odds(SQLModel, table=True):
+    """公式サイトから取得した発走前オッズ(Playwrightでスクレイピング)。
+    同じレースを複数回取得した場合は最新のものだけ残す。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    scraped_at: str  # ISO8601タイムスタンプ
+
+    racer_boat_number: int
+    win_odds: float | None = None
+    place_odds_low: float | None = None
+    place_odds_high: float | None = None
+
+    __table_args__ = ({"sqlite_autoincrement": True},)

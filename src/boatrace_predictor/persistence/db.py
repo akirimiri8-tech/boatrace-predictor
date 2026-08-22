@@ -8,6 +8,7 @@ from boatrace_predictor.config import settings
 from boatrace_predictor.data.schemas import RaceProgram
 from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
+    Odds,
     Payout,
     Prediction,
     PredictionScore,
@@ -250,3 +251,31 @@ def save_prediction(
             PredictionScore(prediction_id=prediction.id, racer_boat_number=boat, score=score)
         )
     return prediction
+
+
+def save_odds(
+    session: Session,
+    race_id: int,
+    scraped_at: str,
+    win_odds: dict[int, float],
+    place_odds: dict[int, tuple[float, float]],
+) -> None:
+    """発走前オッズを保存する。同じレースの古いオッズは削除して置き換える。"""
+    existing = session.exec(select(Odds).where(Odds.race_id == race_id)).all()
+    for old in existing:
+        session.delete(old)
+    session.flush()
+
+    boats = set(win_odds) | set(place_odds)
+    for boat in boats:
+        lo_hi = place_odds.get(boat)
+        session.add(
+            Odds(
+                race_id=race_id,
+                scraped_at=scraped_at,
+                racer_boat_number=boat,
+                win_odds=win_odds.get(boat),
+                place_odds_low=lo_hi[0] if lo_hi else None,
+                place_odds_high=lo_hi[1] if lo_hi else None,
+            )
+        )
