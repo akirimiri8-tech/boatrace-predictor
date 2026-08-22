@@ -8,14 +8,15 @@
 事前分布とした縮小推定(shrinkage)にしている。prior_weightは
 「会場×コースの勝率をどれだけ信じるか」を仮想レース数で表したもの。
 
-検証時の注記: racer_course_win_rate は prior_weight=10 だと単勝的中率が
-54.1%→50.5%に悪化した(データが約5か月分・2会場分と少なく、選手×コースの
-サンプルが薄すぎてノイズを拾ったため)。prior_weight=100前後まで上げると
-ベースライン付近まで戻るが、それはほぼ venue_course_win_rate と同じ値に
-収束しているだけで実質的な追加情報がない。そのためモデル側
-(models/scoring.py の NUMERIC_FEATURES)では現状 venue_course_win_rate
-のみを使い、racer_course_win_rate は未採用にしている。データが増えたら
-再評価する。
+検証履歴:
+- 2026-08-06(データ約2,500レース時点): prior_weight=10だと単勝的中率が
+  54.1%→50.5%に悪化。サンプルが薄すぎてノイズを拾ったため不採用にしていた。
+- 2026-08-22(データ5,000レース超に増えた時点で再検証): prior_weight=100で
+  ロジスティック回帰は的中率56.3%→56.8%・回収率95.0%→98.3%と改善。
+  LightGBMは的中率58.2%→56.1%・回収率95.7%→98.2%(的中率は下がるが
+  回収率は上がるトレードオフ)。回収率改善を優先して採用した。
+  データが増えたことで選手×コースのサンプルが十分になり、ノイズでなく
+  シグナルとして使えるようになったとみられる。
 """
 
 from dataclasses import dataclass, field
@@ -29,10 +30,10 @@ class CourseEncodings:
     racer_course_wins: dict[tuple[int, int], float] = field(default_factory=dict)
     racer_course_n: dict[tuple[int, int], float] = field(default_factory=dict)
     global_mean: float = 1 / 6
-    prior_weight: float = 10.0
+    prior_weight: float = 100.0
 
 
-def fit_course_encodings(train_df: pd.DataFrame, prior_weight: float = 10.0) -> CourseEncodings:
+def fit_course_encodings(train_df: pd.DataFrame, prior_weight: float = 100.0) -> CourseEncodings:
     global_mean = train_df["is_win"].mean() if len(train_df) else 1 / 6
 
     venue_course = train_df.groupby(["stadium_number", "course_number"])["is_win"].mean()

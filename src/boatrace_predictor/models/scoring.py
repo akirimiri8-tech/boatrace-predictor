@@ -45,9 +45,7 @@ NUMERIC_FEATURES = [
     "tide_trend_cm_per_hour",
     "moon_age",
     "venue_course_win_rate",
-    # racer_course_win_rate は検証の結果いったん除外(features/encodings.py 参照)。
-    # 選手×コースは1人あたりのサンプル数が少なく、縮小推定を強くかけないと
-    # ノイズを拾って単勝的中率が悪化した(54.1%→50.5%)。データが増えたら再検討する。
+    "racer_course_win_rate",  # 2026-08-22採用。詳細はfeatures/encodings.py参照
 ]
 
 CATEGORICAL_FEATURES = [
