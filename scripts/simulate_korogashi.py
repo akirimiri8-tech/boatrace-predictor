@@ -36,6 +36,12 @@ def main() -> None:
     parser.add_argument("--model", default="lightgbm_ranking")
     parser.add_argument("--bet-type", default="win", choices=["win", "place"])
     parser.add_argument("--seed-yen", type=int, default=1000, help="1日の元手(円)")
+    parser.add_argument(
+        "--target-multiplier",
+        type=float,
+        default=None,
+        help="元手の何倍に達したら打ち止めにするか(例: 2で2倍達成時点で利確して終了)",
+    )
     args = parser.parse_args()
 
     with Session(engine) as session:
@@ -64,12 +70,16 @@ def main() -> None:
 
         total_days = 0
         survived_full_day = 0
+        target_hit_days = 0
+        busted_days = 0
         final_balances = []
+        target_balance = args.seed_yen * args.target_multiplier if args.target_multiplier else None
 
         for day, day_rows in sorted(by_date.items()):
             balance = args.seed_yen
             n_races_rolled = 0
             busted = False
+            target_hit = False
 
             for prediction, race in day_rows:
                 payouts = session.exec(
@@ -86,6 +96,9 @@ def main() -> None:
 
                 if hit is not None:
                     balance = balance * (hit.amount / 100)
+                    if target_balance is not None and balance >= target_balance:
+                        target_hit = True
+                        break  # 目標額に到達したので打ち止め(利確)
                 else:
                     balance = 0
                     busted = True
@@ -95,14 +108,26 @@ def main() -> None:
             final_balances.append(balance)
             if not busted:
                 survived_full_day += 1
+            if target_hit:
+                target_hit_days += 1
+            if busted:
+                busted_days += 1
 
-            status = "完走" if not busted else f"{n_races_rolled}レース目で終了"
+            if target_hit:
+                status = f"目標達成({args.target_multiplier}倍)で打ち止め"
+            elif busted:
+                status = f"{n_races_rolled}レース目で終了(全損)"
+            else:
+                status = "その日の全レース終了(目標未達)"
             print(f"{day}: {n_races_rolled}レース挑戦 → {status}, 最終資金 {balance:,.0f}円")
 
         print()
         avg_final = sum(final_balances) / len(final_balances)
         print(f"対象日数: {total_days}日")
-        print(f"最後まで完走できた日: {survived_full_day}日 ({survived_full_day/total_days:.0%})")
+        if target_balance is not None:
+            print(f"目標({args.target_multiplier}倍={target_balance:,.0f}円)達成した日: "
+                  f"{target_hit_days}日 ({target_hit_days/total_days:.0%})")
+        print(f"全損した日: {busted_days}日 ({busted_days/total_days:.0%})")
         print(f"平均最終資金: {avg_final:,.0f}円 (元手{args.seed_yen}円)")
         print(f"日次平均リターン: {avg_final/args.seed_yen:.1%}")
 
