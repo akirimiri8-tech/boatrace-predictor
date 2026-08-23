@@ -80,6 +80,33 @@ def test_save_race_persists_racers_preview_result_and_payouts() -> None:
         assert len(payouts) >= 1
 
 
+def test_save_race_skips_payout_entries_with_null_combination_or_amount() -> None:
+    """稀に payouts の combination/amount が null になることがある(2026-08-22確認)。
+    保存時にクラッシュせず、そのエントリだけスキップされることを確認する。"""
+    engine = _engine()
+    race = _load_race_with_preview_and_result()
+    assert race.result is not None and race.result.payouts is not None
+
+    from boatrace_predictor.data.schemas import PayoutEntry
+
+    race.result.payouts.win = [
+        PayoutEntry(combination="1", amount=150),
+        PayoutEntry(combination=None, amount=200),
+        PayoutEntry(combination="2", amount=None),
+    ]
+
+    with Session(engine) as session:
+        save_race(session, race)
+        session.commit()
+
+        win_payouts = session.exec(
+            select(Payout).where(Payout.bet_type == "win")
+        ).all()
+        assert len(win_payouts) == 1
+        assert win_payouts[0].combination == "1"
+        assert win_payouts[0].amount == 150
+
+
 def test_save_race_is_idempotent_on_rerun() -> None:
     engine = _engine()
     race = _load_race_with_preview_and_result()

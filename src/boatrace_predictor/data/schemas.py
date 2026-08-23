@@ -80,8 +80,10 @@ class ResultRacer(BaseModel):
 
 
 class PayoutEntry(BaseModel):
-    combination: str
-    amount: int
+    # 稀にcombination/amountがnullになるケースがある(2026-08-22、複勝等の払戻で確認)。
+    # 原因不明(該当着順が存在しないレースなど)だが欠損として扱い、保存時にスキップする。
+    combination: str | None = None
+    amount: int | None = None
 
 
 class Payouts(BaseModel):

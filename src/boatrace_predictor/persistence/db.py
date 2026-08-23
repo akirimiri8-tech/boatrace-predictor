@@ -174,6 +174,8 @@ def save_race(session: Session, race: RaceProgram) -> int:
         if res.payouts is not None:
             for bet_type, entries in res.payouts.model_dump().items():
                 for entry in entries:
+                    if entry["amount"] is None or entry["combination"] is None:
+                        continue  # 稀に欠損する(schemas.py参照)。保存しない
                     session.add(
                         Payout(
                             race_id=race_id,
