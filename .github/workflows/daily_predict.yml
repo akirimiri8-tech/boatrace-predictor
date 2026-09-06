@@ -1,0 +1,58 @@
+name: daily-predict
+
+# ローカルPCのタスクスケジューラ(Windows)がログイン中セッション必須/PCスリープで
+# 何度も止まったため、GitHub Actionsに移行した(2026-09-04)。
+#
+# GitHub ActionsのランナーはREADME実行ごとに使い捨てで前回の状態を引き継がないため、
+# SQLite DB(data/boatrace.db)はリポジトリにコミットせず、GitHub Releaseの
+# "db-latest" タグにアセットとして置いて、実行のたびにダウンロード→更新→
+# アップロードする(release-basedの簡易永続化。DBは頻繁に更新されるので
+# git履歴に残すとリポジトリが際限なく肥大化するため)。
+
+on:
+  schedule:
+    # UTC 0:00〜12:30 = JST 9:00〜21:30、30分おき。GitHub Actionsのcronは
+    # 数分〜まれに10分以上遅延することがある(仕様上の制約、確実な時刻起動は保証されない)。
+    - cron: "0,30 0-12 * * *"
+  workflow_dispatch: {}  # 手動実行用(GitHubのActionsタブから "Run workflow" で起動できる)
+
+permissions:
+  contents: write  # gh release upload に必要
+
+concurrency:
+  group: daily-predict
+  cancel-in-progress: false  # 前回の実行がまだ終わっていなければ待つ(DBの取り合いを避ける)
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PLAYWRIGHT_BROWSERS_PATH: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Install Playwright browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Download latest DB snapshot
+        run: |
+          mkdir -p data
+          gh release download db-latest --repo "${{ github.repository }}" \
+            --pattern boatrace.db --output data/boatrace.db --clobber
+
+      - name: Run daily_predict.py
+        run: python scripts/daily_predict.py
+
+      - name: Upload updated DB snapshot
+        if: always()  # 途中で失敗しても、そこまでの進捗は保存しておく
+        run: |
+          gh release upload db-latest data/boatrace.db --repo "${{ github.repository }}" --clobber
