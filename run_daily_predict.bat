@@ -14,6 +14,13 @@ REM "input redirection is not supported" when stdin is redirected, which happens
 REM in non-interactive contexts such as Task Scheduler.
 ping -n 31 127.0.0.1 > nul
 
+REM Fixes an intermittent "chrome-headless-shell.exe doesn't exist" failure seen
+REM only under Task Scheduler (2026-08-23, 2026-08-28): the default global browser
+REM cache path (%LOCALAPPDATA%\ms-playwright) does not always resolve correctly in
+REM that execution context. PLAYWRIGHT_BROWSERS_PATH=0 makes Playwright use the
+REM browsers installed inside .venv instead, avoiding the ambiguity.
+set PLAYWRIGHT_BROWSERS_PATH=0
+
 echo ===== %date% %time% ===== >> logs\daily_predict.log
 
 for /L %%i in (1,1,3) do (

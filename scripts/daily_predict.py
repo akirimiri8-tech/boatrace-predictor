@@ -17,6 +17,12 @@ API側で発走後にも更新されることがあり、発走済みレース�
 (2026-08-03、7Rの予想が再現できない問題が発生して判明)。
 過去日を指定して研究目的で無理やり予想を作りたい場合は --allow-finished を使う。
 
+同じ理由で、展示タイム・展示STがまだ公式に出ていないレースも予想を保存しない
+(2026-09-03発覚: 本番ログの80.6%が展示タイム欠損のまま確定しており、これが
+バックテストで確認した単勝的中率54〜58%を実運用が大きく下回っていた主因と
+判明した)。データが揃うまで次回実行を待ち、それでも発走まで揃わなかった
+レースは予想なしのまま残る(不完全な予想を残すより正直な状態)。
+
 このスクリプトは1日1回ではなく、レース開催中は30分〜1時間おきに繰り返し
 実行する運用を想定している(1回で全レース分の直前情報が揃うわけではないため)。
 既に予想済みのレースは再度上書きされる(直前情報が更新され次第、最新の内容で
@@ -28,20 +34,46 @@ API側で発走後にも更新されることがあり、発走済みレース�
 """
 
 import argparse
+import ctypes
 import sys
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from loguru import logger
+from playwright.sync_api import sync_playwright
 from sqlmodel import Session
+
+# 2026-09-01: タスクスケジューラのS4U化(ログイン無しでも起動できる)は解決したが、
+# 別の問題として「実行の途中でPCがスリープして数時間止まる」ことが判明した
+# (8/31、開始から4時間41分後にログが再開する形跡があった)。実行中はWindowsに
+# 「システムをスリープさせないでほしい」と明示的にリクエストする(電源設定自体は
+# 変更しない、このプロセスが動いている間だけの一時的な要求)。
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+
+@contextmanager
+def _prevent_sleep():
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+    except (AttributeError, OSError):
+        yield  # Windows以外(開発機がmac/linuxの場合など)では何もしない
+        return
+    try:
+        yield
+    finally:
+        ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
 
 from boatrace_predictor.config import STADIUMS, settings
 from boatrace_predictor.data.client import BoatraceOpenAPIClient
 from boatrace_predictor.data.odds_client import OddsClient
+from boatrace_predictor.data.parts_exchange_client import PartsExchangeClient
 from boatrace_predictor.features.dataset import build_dataset, build_race_features
 from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
+from boatrace_predictor.features.finish_pattern import fit_finish_pattern, rerank_with_pattern
 from boatrace_predictor.models import ranking
 from boatrace_predictor.models.scoring import (
     CATEGORICAL_FEATURES,
@@ -49,7 +81,14 @@ from boatrace_predictor.models.scoring import (
     predict_win_probability,
     train,
 )
-from boatrace_predictor.persistence.db import engine, init_db, save_odds, save_prediction, save_race
+from boatrace_predictor.persistence.db import (
+    engine,
+    init_db,
+    save_odds,
+    save_parts_exchange,
+    save_prediction,
+    save_race,
+)
 
 # 2026-08-06: LightGBMランキングモデルに切り替え(単勝/複勝の回収率で
 # ロジスティック回帰を上回るようになったため)。ロジスティック回帰は
@@ -87,6 +126,11 @@ def main() -> None:
         action="store_true",
         help="公式サイトのオッズ取得(Playwright)を無効化する",
     )
+    parser.add_argument(
+        "--skip-parts",
+        action="store_true",
+        help="公式サイトの部品交換情報取得(Playwright)を無効化する",
+    )
     args = parser.parse_args()
 
     target_date = date.fromisoformat(args.date) if args.date else date.today()
@@ -108,6 +152,12 @@ def main() -> None:
 
         encodings = fit_course_encodings(history)
         history = apply_course_encodings(history, encodings)
+        # 2着・3着はモデルのスコア順に並べるだけでは艇同士の関係(出目の偏り)を
+        # 無視することになるため、1着コースから見た2着・3着コースの経験分布で
+        # 組み直す(features/finish_pattern.py)。2026-08-23、YouTube調査をきっかけに
+        # 検証: 2連単の的中率が19.8%→21.6%、2連複が27.7%→29.9%に改善(train_frac
+        # 0.5〜0.8の複数分割で再現確認済み)。1着の予想自体は変えない。
+        finish_pattern = fit_finish_pattern(history)
         models = _fit_models(history)
         logger.info(
             f"学習データ: {history['race_id'].nunique()}レース"
@@ -132,9 +182,19 @@ def main() -> None:
         predicted_at = now.isoformat(timespec="seconds")
         n_predicted = 0
         n_skipped_finished = 0
+        n_skipped_incomplete = 0
         n_ev_observed = 0
 
-        odds_client = None if args.skip_odds else OddsClient().__enter__()
+        # OddsClientとPartsExchangeClientはどちらも公式サイトをPlaywrightで開くが、
+        # sync_playwright()を同一プロセスで2回起動すると衝突する(2026-08-24判明)ため、
+        # ブラウザを1つだけ起動して両方に共有させる
+        need_browser = not (args.skip_odds and args.skip_parts)
+        playwright_ctx = sync_playwright().start() if need_browser else None
+        browser = playwright_ctx.chromium.launch(headless=True) if playwright_ctx else None
+        odds_client = None if args.skip_odds else OddsClient(browser=browser).__enter__()
+        parts_client = (
+            None if args.skip_parts else PartsExchangeClient(browser=browser).__enter__()
+        )
         try:
             for race in races:
                 if race.closed_at and not args.allow_finished:
@@ -147,6 +207,20 @@ def main() -> None:
                 df = build_race_features(session, race_id)
                 if df["national_win_rate"].isna().all():
                     continue  # 出走表自体が無い(会場コードの取り違え等)場合はスキップ
+
+                # 2026-09-03: 展示タイム・展示STは発走が近づくまで公式に出ないことがあり、
+                # 未確定のまま予想を確定させると欠損値が中央値補完されて精度が落ちる
+                # (ログ調査の結果、本番予想の80.6%が展示タイム欠損のまま保存されており、
+                # 実際に単勝的中率が過去のバックテスト水準54〜58%を大きく下回る一因と
+                # 判明した)。欠けている間は予想を保存せず、次回実行(揃った時点)を待つ。
+                # 発走直前まで一度も揃わなかったレースは結果として予想なしのままになるが、
+                # 不完全なデータでの予想を「最終版」として残すよりは正直な状態。
+                if not args.allow_finished and (
+                    df["exhibition_time"].isna().any() or df["preview_start_timing"].isna().any()
+                ):
+                    n_skipped_incomplete += 1
+                    continue
+
                 df = apply_course_encodings(df, encodings)
                 features_snapshot = df[
                     ["racer_boat_number"] + NUMERIC_FEATURES + CATEGORICAL_FEATURES
@@ -157,11 +231,7 @@ def main() -> None:
                 calibrated_win_prob = None  # ロジスティック回帰の確率(EV計算用、検証済み)
                 for model_name, predict_fn in models:
                     scores_series = predict_fn(df)
-                    ranked = (
-                        df.assign(_score=scores_series)
-                        .sort_values("_score", ascending=False)["racer_boat_number"]
-                        .tolist()
-                    )
+                    ranked = rerank_with_pattern(df, scores_series, finish_pattern)[race_id]
                     scores = dict(zip(df["racer_boat_number"], scores_series))
                     save_prediction(
                         session, race_id, predicted_at, model_name, ranked, scores, features_snapshot
@@ -178,10 +248,21 @@ def main() -> None:
                 # LightGBMランキングモデルのスコアは確率ではない(0〜1に収まらない生スコア)ので
                 # %表示はしない。ロジスティック回帰のような確率が欲しい場合は
                 # daily_report.py --model logistic_regression 側のログを見る
+                top1_score, top2_score = sorted(primary_scores.values(), reverse=True)[:2]
+                margin = top1_score - top2_score
+                # 2026-08-23: 1位・2位のスコア差(margin)でレースを4分位に分けてバックテスト
+                # したところ、marginが大きいほど単勝的中率が上がる(36.7%→72.6%)ことを確認。
+                # ただし単発の単勝回収率はほぼ変わらない(市場のオッズが自信度をある程度
+                # 織り込んでいるため、favorite-longshot bias)。一方、転がし(korogashi)は
+                # 連続的中が必要なので、的中率が上がること自体に価値がある
+                # (的中率0.726のレースだけを5連続なら生存率20.4%、0.54なら4.6%)。
+                # そのためEVシグナルとは別に「参考: 高確信」という表示だけ追加する
+                # (行動を強制するものではなく、転がし対象レースを絞る判断材料)。
+                confidence_tag = " [参考:高確信]" if margin >= 1.73 else ""
                 print(
                     f"{race.date} {name} {race.race_number}R: "
                     f"予想 {primary_ranked[0]}-{primary_ranked[1]}-{primary_ranked[2]} "
-                    f"(1着スコア: {primary_scores[primary_ranked[0]]:.2f})"
+                    f"(1着スコア: {top1_score:.2f}, margin: {margin:.2f}){confidence_tag}"
                 )
 
                 if odds_client is not None:
@@ -219,17 +300,42 @@ def main() -> None:
                                 f"(予想確率{win_prob[best_boat]:.1%} x オッズ{win_odds[best_boat]:.1f}倍 "
                                 f"= 期待値{best_ev:.2f}) ※行動材料にはまだ使えません"
                             )
+
+                if parts_client is not None:
+                    try:
+                        parts = parts_client.fetch_parts_exchange(
+                            race.stadium_number, target_date, race.race_number
+                        )
+                    except Exception as e:  # スクレイピング失敗は予想自体を止めない
+                        logger.warning(f"  部品交換情報取得失敗: {e}")
+                        parts = {}
+                    if parts:
+                        save_parts_exchange(session, race_id, predicted_at, parts)
+                        # 5点改善計画の項目3(2026-08-23)。まだ予測モデルの特徴量には
+                        # 組み込んでいない(過去データが無く検証できないため、保存だけ
+                        # 先に始めてデータが溜まってから効果を検証する)。参考表示のみ。
+                        parts_desc = ", ".join(f"{b}号艇:{'/'.join(p)}" for b, p in parts.items())
+                        print(f"  [参考] 部品交換あり: {parts_desc}")
         finally:
             if odds_client is not None:
                 odds_client.__exit__(None, None, None)
+            if parts_client is not None:
+                parts_client.__exit__(None, None, None)
+            if browser is not None:
+                browser.close()
+            if playwright_ctx is not None:
+                playwright_ctx.stop()
 
         session.commit()
 
         logger.info(
             f"完了: {n_predicted}レース分の予想を保存"
-            f"(発走済みでスキップ: {n_skipped_finished}件、参考EV表示: {n_ev_observed}件(未検証))"
+            f"(発走済みでスキップ: {n_skipped_finished}件、"
+            f"直前情報未確定でスキップ: {n_skipped_incomplete}件、"
+            f"参考EV表示: {n_ev_observed}件(未検証))"
         )
 
 
 if __name__ == "__main__":
-    main()
+    with _prevent_sleep():
+        main()

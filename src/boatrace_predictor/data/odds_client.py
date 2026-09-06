@@ -67,22 +67,33 @@ def _parse_odds_text(text: str) -> tuple[dict[int, float], dict[int, tuple[float
 
 
 class OddsClient:
-    """ブラウザを1つだけ起動して使い回す(レースごとに起動すると遅い)。"""
+    """ブラウザを1つだけ起動して使い回す(レースごとに起動すると遅い)。
 
-    def __init__(self) -> None:
+    browser を渡すとそれを使い回す(他のクライアントと共有する場合)。省略時は
+    自分でPlaywrightを起動する。同一プロセス内でsync_playwright()を複数回
+    起動すると "using Playwright Sync API inside the asyncio loop" エラーに
+    なることがある(2026-08-24、daily_predict.pyでOddsClientとPartsExchangeClientを
+    両方使ったときに発生・判明)ため、複数クライアントを併用する場合は
+    呼び出し側で1つのbrowserを起動して共有すること。
+    """
+
+    def __init__(self, browser=None) -> None:
         self._playwright = None
-        self._browser = None
+        self._browser = browser
+        self._owns_browser = browser is None
 
     def __enter__(self) -> "OddsClient":
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=True)
+        if self._owns_browser:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch(headless=True)
         return self
 
     def __exit__(self, *exc: object) -> None:
-        if self._browser is not None:
-            self._browser.close()
-        if self._playwright is not None:
-            self._playwright.stop()
+        if self._owns_browser:
+            if self._browser is not None:
+                self._browser.close()
+            if self._playwright is not None:
+                self._playwright.stop()
 
     def fetch_odds(
         self, stadium_number: int, target_date: date, race_number: int

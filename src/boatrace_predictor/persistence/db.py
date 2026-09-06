@@ -9,6 +9,7 @@ from boatrace_predictor.data.schemas import RaceProgram
 from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
     Odds,
+    PartsExchange,
     Payout,
     Prediction,
     PredictionScore,
@@ -279,5 +280,33 @@ def save_odds(
                 win_odds=win_odds.get(boat),
                 place_odds_low=lo_hi[0] if lo_hi else None,
                 place_odds_high=lo_hi[1] if lo_hi else None,
+            )
+        )
+
+
+def save_parts_exchange(
+    session: Session,
+    race_id: int,
+    scraped_at: str,
+    parts_by_boat: dict[int, list[str]],
+) -> None:
+    """部品交換情報を保存する。同じレースの古い記録は削除して置き換える。
+    交換の無かった艇は行を作らない(parts_by_boatに存在しない艇は何も保存しない)。"""
+    existing = session.exec(
+        select(PartsExchange).where(PartsExchange.race_id == race_id)
+    ).all()
+    for old in existing:
+        session.delete(old)
+    session.flush()
+
+    for boat, parts in parts_by_boat.items():
+        if not parts:
+            continue
+        session.add(
+            PartsExchange(
+                race_id=race_id,
+                scraped_at=scraped_at,
+                racer_boat_number=boat,
+                parts=",".join(parts),
             )
         )

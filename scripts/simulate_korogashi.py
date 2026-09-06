@@ -20,13 +20,28 @@ from sqlmodel import Session, select
 
 from boatrace_predictor.backtest.bet_types import BET_TYPE_LABELS
 from boatrace_predictor.persistence.db import engine
-from boatrace_predictor.persistence.models import Payout, Prediction, Race
+from boatrace_predictor.persistence.models import Payout, Prediction, PredictionScore, Race
 
 _BET_TYPE_SIZE = {"win": 1, "place": 1}  # ころがしは単勝/複勝のみ対応(1艇の的中判定のみ)
 
 
 def _is_hit(bet_type: str, boat: int, combination: str) -> bool:
     return combination == str(boat)
+
+
+def _score_margin(session: Session, prediction_id: int) -> float | None:
+    """1位・2位のスコア差(自信度の目安)。features/finish_pattern.py導入時の
+    バックテストで、この差が大きいレースほど単勝的中率が上がる(四分位で36.7%→72.6%)
+    ことを確認済み。ただし単発の回収率はほぼ変わらない(オッズが自信度を織り込むため)。
+    転がしは連続的中が必要な分だけ的中率の高さが直接効くので、--min-marginで
+    絞り込めるようにしている。"""
+    scores = session.exec(
+        select(PredictionScore.score).where(PredictionScore.prediction_id == prediction_id)
+    ).all()
+    if len(scores) < 2:
+        return None
+    top1, top2 = sorted(scores, reverse=True)[:2]
+    return top1 - top2
 
 
 def main() -> None:
@@ -41,6 +56,15 @@ def main() -> None:
         type=float,
         default=None,
         help="元手の何倍に達したら打ち止めにするか(例: 2で2倍達成時点で利確して終了)",
+    )
+    parser.add_argument(
+        "--min-margin",
+        type=float,
+        default=None,
+        help=(
+            "1位・2位のスコア差がこの値未満のレースは転がし対象から除外する"
+            "(自信度が低いレースを避ける。バックテストでは1.73以上のレースで単勝的中率72.6%%)"
+        ),
     )
     args = parser.parse_args()
 
@@ -89,6 +113,11 @@ def main() -> None:
                 ).all()
                 if not payouts:
                     continue  # 結果未確定(まだレースが終わっていない)のでスキップ
+
+                if args.min_margin is not None:
+                    margin = _score_margin(session, prediction.id)
+                    if margin is None or margin < args.min_margin:
+                        continue  # 自信度が低いレースはスキップ(そのレースには賭けない)
 
                 pick = prediction.predicted_1st
                 hit = next((p for p in payouts if _is_hit(args.bet_type, pick, p.combination)), None)

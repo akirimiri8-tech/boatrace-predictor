@@ -173,6 +173,21 @@ class PredictionScore(SQLModel, table=True):
     score: float
 
 
+class PartsExchange(SQLModel, table=True):
+    """公式サイトの直前情報ページから取得した部品交換情報(Playwrightでスクレイピング)。
+    同じレースを複数回取得した場合は最新のものだけ残す。交換が無かった艇は
+    行自体を作らない(交換ありの艇だけレコードが存在する)。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    scraped_at: str  # ISO8601タイムスタンプ
+
+    racer_boat_number: int
+    parts: str  # カンマ区切りの交換部品名(例: "リング,プロペラ")
+
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+
 class Odds(SQLModel, table=True):
     """公式サイトから取得した発走前オッズ(Playwrightでスクレイピング)。
     同じレースを複数回取得した場合は最新のものだけ残す。"""
