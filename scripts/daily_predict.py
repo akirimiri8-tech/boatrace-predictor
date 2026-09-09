@@ -39,12 +39,27 @@ import sys
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from loguru import logger
 from playwright.sync_api import sync_playwright
 from sqlmodel import Session
+
+# Boatrace Open APIのclosed_at等はJST(タイムゾーン情報なしの文字列)で来る。
+# ローカルWindows PC(JST設定)ではdatetime.now()がたまたま一致していたため
+# 気づかなかったが、GitHub Actions移行(2026-09-04、Ubuntuランナー=UTC)後に
+# 「発走済みでスキップ」が常に0件になる不具合として発覚(2026-09-09)。
+# UTC 5:27の実行で closed_at 10:30 のレースを「まだ発走前」と誤判定していた
+# (UTCの5:27をJSTのclosed_atとそのまま比較していたため、実際には9時間以上前に
+# 発走済みだった)。実行環境のタイムゾーンに関係なく正しく比較できるよう、
+# 「今」は常にJSTとして明示的に計算する。
+_JST = ZoneInfo("Asia/Tokyo")
+
+
+def _now_jst() -> datetime:
+    return datetime.now(_JST).replace(tzinfo=None)
 
 # 2026-09-01: タスクスケジューラのS4U化(ログイン無しでも起動できる)は解決したが、
 # 別の問題として「実行の途中でPCがスリープして数時間止まる」ことが判明した
@@ -133,7 +148,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    target_date = date.fromisoformat(args.date) if args.date else date.today()
+    target_date = date.fromisoformat(args.date) if args.date else _now_jst().date()
     stadiums = set(args.stadiums)
 
     init_db()
@@ -178,7 +193,7 @@ def main() -> None:
         session.commit()
 
         # 3. レースごとに予想してログ保存(発走済みは原則スキップ)
-        now = datetime.now()
+        now = _now_jst()
         predicted_at = now.isoformat(timespec="seconds")
         n_predicted = 0
         n_skipped_finished = 0
