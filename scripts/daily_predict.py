@@ -33,8 +33,14 @@ API側で発走後にも更新されることがあり、発走済みレース�
 頃には)「もう発走済み」という間を縫ってしまい、丸1日予想0件という日が発生した。
 外部トリガーを増やす(cron-job.org等)以外の対処として、1回の実行内で
 未確定レースが無くなるかタイムアウトするまで数分おきに内部リトライするように
-した(_POLL_INTERVAL_SECONDS/_MAX_POLL_SECONDS)。GitHub Actions側の
-timeout-minutes(25分)より短い時間で必ず打ち切る。
+した(_POLL_INTERVAL_SECONDS/_MAX_POLL_SECONDS)。
+
+2026-09-11: 18分のポーリングでもまだカバー不足(1日通して数レースしか拾えない日が
+あった)と判明。GitHub Actionsの無料枠は1ジョブ最大6時間動けるので、
+_MAX_POLL_SECONDSを最大5時間台まで伸ばし、「朝に1回でも起動できれば、その1回の
+実行だけでほぼ1日分をポーリングでカバーする」設計に変更した。scheduleの発火が
+不安定でも、1日1〜2回捕まえられれば十分になる。GitHub Actions側のtimeout-minutes
+もこれに合わせて延長する。
 
 使い方:
     python scripts/daily_predict.py
@@ -127,11 +133,13 @@ PRIMARY_MODEL = "lightgbm_ranking"
 # 「観察のみ」モード: 参考表示するだけで、行動の判断材料には使わないこと。
 EV_THRESHOLD = 1.2
 
-# 2026-09-09: 直前情報がまだ揃っていないレースを、揃うまでこのスクリプト内で
-# 待ってリトライする際の間隔と上限時間。GitHub Actionsのtimeout-minutes(25分)
-# より確実に短く終わるようにする。
+# 2026-09-09/11: 直前情報がまだ揃っていないレースを、揃うまでこのスクリプト内で
+# 待ってリトライする際の間隔と上限時間。GitHub Actionsの無料枠は1ジョブ最大6時間
+# 動けるため、5時間40分(セットアップ・DBアップロード分の余裕を見て)まで粘る。
+# これにより、schedule:の発火が1日1回でも成功すれば、その1回でほぼ1日分の
+# レースをカバーできる設計にした(2026-09-11、18分だと拾えるレースが少なすぎた)。
 _POLL_INTERVAL_SECONDS = 180
-_MAX_POLL_SECONDS = 18 * 60
+_MAX_POLL_SECONDS = 340 * 60
 
 
 def _fit_models(history):

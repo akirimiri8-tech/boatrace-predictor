@@ -11,9 +11,13 @@ name: daily-predict
 
 on:
   schedule:
-    # UTC 0:00〜12:30 = JST 9:00〜21:30、30分おき。GitHub Actionsのcronは
+    # 2026-09-11: daily_predict.py側が1回の実行で最大5時間40分ポーリングするように
+    # なったため、30分おきに何度も起動する必要が無くなった(むしろ待ち行列が
+    # 溜まるだけ)。JST 9:00と15:00の2回だけキックし、片方が失敗/クラッシュしても
+    # もう片方でカバーできるようにする安全網として使う。GitHub Actionsのcronは
     # 数分〜まれに10分以上遅延することがある(仕様上の制約、確実な時刻起動は保証されない)。
-    - cron: "0,30 0-12 * * *"
+    - cron: "0 0 * * *"  # JST 9:00
+    - cron: "0 6 * * *"  # JST 15:00
   workflow_dispatch: {}  # 手動実行用(GitHubのActionsタブから "Run workflow" で起動できる)
 
 permissions:
@@ -26,8 +30,9 @@ concurrency:
 jobs:
   predict:
     runs-on: ubuntu-latest
-    # daily_predict.py内部で最大18分ポーリングするため、セットアップ分の余裕を見て30分にする
-    timeout-minutes: 30
+    # daily_predict.py内部で最大5時間40分ポーリングするため、セットアップ分の余裕を見て
+    # 350分にする(GitHub Actionsの無料枠は1ジョブ最大360分=6時間)
+    timeout-minutes: 350
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
