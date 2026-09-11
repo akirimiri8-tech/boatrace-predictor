@@ -49,6 +49,8 @@ _MAX_POLL_SECONDSを最大5時間台まで伸ばし、「朝に1回でも起動�
 
 import argparse
 import ctypes
+import os
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -75,6 +77,30 @@ _JST = ZoneInfo("Asia/Tokyo")
 
 def _now_jst() -> datetime:
     return datetime.now(_JST).replace(tzinfo=None)
+
+
+# 2026-09-11: 1回の実行が最大5時間40分粘るようになったが、GitHub Releaseへの
+# DBアップロードはワークフロー側の最後のステップでしか行われないため、実行中は
+# 進捗が全く外から見えず、350分のジョブタイムアウトで強制終了した場合はその日の
+# 進捗が丸ごと失われるリスクがあった。ポーリングの各周回ごとにこの関数で
+# 直接アップロードし、いつでも進捗を確認できる・失われないようにする。
+# GitHub Actions上でのみ動く(GITHUB_ACTIONS環境変数で判定、ローカル実行では何もしない)。
+def _upload_progress_in_ci(db_path: Path) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not repo:
+        return
+    try:
+        subprocess.run(
+            ["gh", "release", "upload", "db-latest", str(db_path), "--repo", repo, "--clobber"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as e:  # 進捗アップロードの失敗で本体の処理を止めない
+        logger.warning(f"進捗アップロード失敗: {e}")
 
 
 # 2026-09-01: タスクスケジューラのS4U化(ログイン無しでも起動できる)は解決したが、
@@ -371,6 +397,7 @@ def main() -> None:
                             print(f"  [参考] 部品交換あり: {parts_desc}")
 
                 session.commit()
+                _upload_progress_in_ci(settings.db_path)
 
                 if n_skipped_incomplete == 0:
                     break  # 全レース処理済み(予想済みか発走済み)、ポーリング終了
