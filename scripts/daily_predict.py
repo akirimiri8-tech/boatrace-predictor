@@ -159,13 +159,16 @@ PRIMARY_MODEL = "lightgbm_ranking"
 # 「観察のみ」モード: 参考表示するだけで、行動の判断材料には使わないこと。
 EV_THRESHOLD = 1.2
 
-# 2026-09-09/11: 直前情報がまだ揃っていないレースを、揃うまでこのスクリプト内で
+# 2026-09-09/11/15: 直前情報がまだ揃っていないレースを、揃うまでこのスクリプト内で
 # 待ってリトライする際の間隔と上限時間。GitHub Actionsの無料枠は1ジョブ最大6時間
-# 動けるため、5時間40分(セットアップ・DBアップロード分の余裕を見て)まで粘る。
+# 動けるため、5時間20分(セットアップ・DBアップロード分の余裕を見て)まで粘る。
 # これにより、schedule:の発火が1日1回でも成功すれば、その1回でほぼ1日分の
 # レースをカバーできる設計にした(2026-09-11、18分だと拾えるレースが少なすぎた)。
+# 2026-09-15、対象会場を4→24に拡大した後は1パスが5〜9分かかるようになり、
+# 340分だと最後のパスがtimeout-minutesの強制キャンセルに間に合わないことがあった
+# ため320分に短縮(パス所要時間を見積もりに使う仕組みも別途追加)。
 _POLL_INTERVAL_SECONDS = 180
-_MAX_POLL_SECONDS = 340 * 60
+_MAX_POLL_SECONDS = 320 * 60
 
 
 def _fit_models(history):
@@ -247,6 +250,8 @@ def main() -> None:
 
         try:
             while True:
+                pass_start = time.monotonic()
+
                 # 2. 当日データ取得・保存(出走表+直前情報。結果はまだ無い想定)
                 with BoatraceOpenAPIClient() as client:
                     races = client.fetch_day(target_date, stadiums=stadiums)
@@ -401,15 +406,25 @@ def main() -> None:
 
                 if n_skipped_incomplete == 0:
                     break  # 全レース処理済み(予想済みか発走済み)、ポーリング終了
+
+                # 2026-09-15: 対象会場拡大(4→24)後、1パス自体が(オッズ/部品交換の
+                # スクレイピング込みで)5〜9分かかるようになり、_POLL_INTERVAL_SECONDS
+                # (3分)しか余裕を見ていなかった時間切れ判定が実態に追いつかず、
+                # GitHub Actions側のtimeout-minutesで強制キャンセルされる事故が発生した。
+                # 直前パスの実測時間(pass_duration)を「次のパスもだいたい同じ時間
+                # かかる」前提で見積もりに使い、安全係数もかけて早めに切り上げる。
+                pass_duration = time.monotonic() - pass_start
                 elapsed = time.monotonic() - poll_start
-                if elapsed + _POLL_INTERVAL_SECONDS > _MAX_POLL_SECONDS:
+                next_pass_estimate = max(pass_duration, _POLL_INTERVAL_SECONDS) * 1.5
+                if elapsed + _POLL_INTERVAL_SECONDS + next_pass_estimate > _MAX_POLL_SECONDS:
                     logger.info(
                         f"直前情報未確定のレースが{n_skipped_incomplete}件残っていますが"
                         "、時間切れのためポーリングを終了します(次回実行を待ちます)"
                     )
                     break
                 logger.info(
-                    f"直前情報未確定のレースが{n_skipped_incomplete}件残っています。"
+                    f"直前情報未確定のレースが{n_skipped_incomplete}件残っています"
+                    f"(直前のチェックに{pass_duration:.0f}秒)。"
                     f"{_POLL_INTERVAL_SECONDS}秒後に再チェックします"
                 )
                 time.sleep(_POLL_INTERVAL_SECONDS)
