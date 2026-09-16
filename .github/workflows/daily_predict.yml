@@ -62,15 +62,19 @@ jobs:
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ steps.playwright-version.outputs.version }}-${{ runner.os }}
+          key: playwright-v2-${{ steps.playwright-version.outputs.version }}-${{ runner.os }}
 
+      # 2026-09-16: cache-hit時にブラウザ本体のインストールを丸ごとスキップしていたら、
+      # 過去にキャンセルされた実行が不完全な状態のキャッシュを保存してしまい、
+      # chromium_headless_shellの実行ファイルが無いままクラッシュした。
+      # `playwright install chromium`はハッシュ確認のみなのでキャッシュが正常なら
+      # 数秒で終わるため、cache-hitでも毎回実行して自己修復させる。
       - name: Install Playwright browser
-        run: python -m playwright install --with-deps chromium
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
 
       - name: Install Playwright OS dependencies only
         run: python -m playwright install-deps chromium
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
 
       - name: Download latest DB snapshot
         run: |
