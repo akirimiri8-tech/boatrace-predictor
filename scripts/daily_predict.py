@@ -11,6 +11,13 @@
 オッズ取得は公式サイトへの直接アクセスなので、失敗しても予想自体は止めない
 (--skip-oddsで無効化もできる)。
 
+2026-09-15: 上記のキャリブレーションのズレをfeatures/calibration.pyのコース別
+isotonic回帰で補正するようにした(学習には使っていない検証用データで効果確認済み、
+コース4は予測28.4%→補正後21.2% vs 実際21.2%と一致)。ただしこれはオフラインの
+検証で、実際の本番オッズ×補正後確率の組み合わせではまだ検証していないため、
+引き続き「観察のみ」モードは維持する。しばらく運用してEVシグナルの精度が
+改善したか確認してから、行動材料として使うかどうか判断すること。
+
 発走時刻(closed_at)を過ぎたレースはデフォルトでスキップする。直前情報は
 API側で発走後にも更新されることがあり、発走済みレースに対して予想を作ると
 「本当にレース前に分かっていた情報」ではなくなってしまうため
@@ -129,6 +136,7 @@ from boatrace_predictor.config import STADIUMS, settings
 from boatrace_predictor.data.client import BoatraceOpenAPIClient
 from boatrace_predictor.data.odds_client import OddsClient
 from boatrace_predictor.data.parts_exchange_client import PartsExchangeClient
+from boatrace_predictor.features.calibration import apply_course_calibration, fit_course_calibration
 from boatrace_predictor.features.dataset import build_dataset, build_race_features
 from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
 from boatrace_predictor.features.finish_pattern import fit_finish_pattern, rerank_with_pattern
@@ -209,18 +217,35 @@ def main() -> None:
 
     with Session(engine) as session:
         # 1. target_dateより前の結果データだけで学習する(未来データを混ぜない)
-        history = build_dataset(
+        raw_history = build_dataset(
             session,
             stadium_numbers=args.stadiums,
             date_to=(target_date - timedelta(days=1)).isoformat(),
         )
-        history = history[history["is_normal_finish"]].reset_index(drop=True)
-        if history.empty or history["is_win"].sum() == 0:
+        raw_history = raw_history[raw_history["is_normal_finish"]].reset_index(drop=True)
+        if raw_history.empty or raw_history["is_win"].sum() == 0:
             logger.error(f"{target_date}より前の学習データが無いため予想できません")
             return
 
-        encodings = fit_course_encodings(history)
-        history = apply_course_encodings(history, encodings)
+        # 2026-09-15: モデル学習用と、キャリブレーション補正フィット用を分ける
+        # (直近20%の日付をキャリブレーション専用に確保)。同じデータで学習と
+        # キャリブレーションを両方やると補正曲線が学習データに過剰適合し、
+        # 未知のレースでの実際のズレを正しく補正できないため。データが少ない
+        # 序盤はキャリブレーション用データが確保できないので学習データをそのまま流用する。
+        dates = sorted(raw_history["date"].unique())
+        split_idx = int(len(dates) * 0.8)
+        if 0 < split_idx < len(dates):
+            train_cutoff = dates[split_idx]
+            model_train_raw = raw_history[raw_history["date"] < train_cutoff].reset_index(drop=True)
+            calib_raw = raw_history[raw_history["date"] >= train_cutoff].reset_index(drop=True)
+        else:
+            model_train_raw = raw_history
+            calib_raw = raw_history
+
+        encodings = fit_course_encodings(model_train_raw)
+        history = apply_course_encodings(model_train_raw, encodings)
+        calib_df = apply_course_encodings(calib_raw, encodings)
+
         # 2着・3着はモデルのスコア順に並べるだけでは艇同士の関係(出目の偏り)を
         # 無視することになるため、1着コースから見た2着・3着コースの経験分布で
         # 組み直す(features/finish_pattern.py)。2026-08-23、YouTube調査をきっかけに
@@ -228,9 +253,20 @@ def main() -> None:
         # 0.5〜0.8の複数分割で再現確認済み)。1着の予想自体は変えない。
         finish_pattern = fit_finish_pattern(history)
         models = _fit_models(history)
+
+        # 2026-08-22発覚・2026-09-15対処: ロジスティック回帰の予測確率は全体平均では
+        # 実際の勝率とほぼ一致するが、コース別に見ると系統的にズレていた
+        # (例: コース4は予測28.4% vs 実際21.2%)。学習には使っていないcalib_dfで
+        # コース別isotonic回帰をフィットし、EV計算に使う確率をこれで補正する。
+        # 別途確保したtest期間で検証済み(補正後はコース4が21.2% vs 実際21.2%と一致)。
+        logistic_predict_fn = next(fn for name, fn in models if name == "logistic_regression")
+        calib_raw_prob = logistic_predict_fn(calib_df)
+        course_calibration = fit_course_calibration(calib_df, calib_raw_prob)
+
         logger.info(
             f"学習データ: {history['race_id'].nunique()}レース"
             f"({history['date'].min()}〜{history['date'].max()})"
+            f" / キャリブレーション用: {calib_df['race_id'].nunique()}レース"
         )
 
         # OddsClientとPartsExchangeClientはどちらも公式サイトをPlaywrightで開くが、
@@ -304,9 +340,16 @@ def main() -> None:
 
                     primary_ranked = None
                     primary_scores_series = None
-                    calibrated_win_prob = None  # ロジスティック回帰の確率(EV計算用、検証済み)
+                    calibrated_win_prob = None  # コース別補正済みのロジスティック回帰確率(EV計算用)
                     for model_name, predict_fn in models:
                         scores_series = predict_fn(df)
+                        if model_name == "logistic_regression":
+                            # 2026-09-15: コース別のキャリブレーション補正を適用してから保存・使用する
+                            # (features/calibration.py参照)。保存するスコアも補正後の値にし、
+                            # ログと実際にEV計算で使う確率を一致させる。
+                            scores_series = apply_course_calibration(
+                                df, scores_series, course_calibration
+                            )
                         ranked = rerank_with_pattern(df, scores_series, finish_pattern)[race_id]
                         scores = dict(zip(df["racer_boat_number"], scores_series))
                         save_prediction(
@@ -367,8 +410,10 @@ def main() -> None:
                             # 大幅に下回るキャリブレーションの歪みが判明(例: 予測34.5%→実際13.6%)。
                             # 「買いシグナル」として自信満々に提示するのは無責任と判断し、
                             # 「観察のみ」モードに変更。ラベルを外し参考値として記録するだけにする。
-                            # もっとデータが溜まってキャリブレーション補正ができるまでは、
-                            # ここに出る数字を実際の判断材料にしないこと。
+                            # 2026-09-15: 上記のズレはコース別isotonic回帰で補正済み(この時点で
+                            # win_probはすでに補正後の値)。ただし本番オッズとの組み合わせでの
+                            # 検証はこれからなので、EVシグナルの精度が実際に改善したか
+                            # ある程度ログが溜まるまでは引き続き行動材料にしないこと。
                             win_prob = calibrated_win_prob or {}
                             best_boat, best_ev = None, 0.0
                             for boat, odds in win_odds.items():
