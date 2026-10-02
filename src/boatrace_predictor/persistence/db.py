@@ -8,6 +8,7 @@ from boatrace_predictor.config import settings
 from boatrace_predictor.data.schemas import RaceProgram
 from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
+    KellyLog,
     Odds,
     PartsExchange,
     Payout,
@@ -280,6 +281,33 @@ def save_odds(
                 win_odds=win_odds.get(boat),
                 place_odds_low=lo_hi[0] if lo_hi else None,
                 place_odds_high=lo_hi[1] if lo_hi else None,
+            )
+        )
+
+
+def save_kelly_log(
+    session: Session,
+    race_id: int,
+    predicted_at: str,
+    entries: dict[int, tuple[float, float, float]],
+) -> None:
+    """ケリー基準の判断をログするだけ(2026-09-30、先読み検証用)。
+    entries: {艇番: (キャリブレーション後確率, オッズ, ケリー係数)}。
+    同じレースの古い記録は削除して置き換える。"""
+    existing = session.exec(select(KellyLog).where(KellyLog.race_id == race_id)).all()
+    for old in existing:
+        session.delete(old)
+    session.flush()
+
+    for boat, (prob, odds, kelly_f) in entries.items():
+        session.add(
+            KellyLog(
+                race_id=race_id,
+                predicted_at=predicted_at,
+                racer_boat_number=boat,
+                calibrated_prob=prob,
+                win_odds=odds,
+                kelly_fraction=kelly_f,
             )
         )
 

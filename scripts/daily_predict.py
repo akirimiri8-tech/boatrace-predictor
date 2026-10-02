@@ -150,6 +150,7 @@ from boatrace_predictor.models.scoring import (
 from boatrace_predictor.persistence.db import (
     engine,
     init_db,
+    save_kelly_log,
     save_odds,
     save_parts_exchange,
     save_prediction,
@@ -401,6 +402,29 @@ def main() -> None:
 
                         if win_odds:
                             save_odds(session, race_id, predicted_at, win_odds, place_odds)
+
+                            # 2026-09-30: ケリー基準でお金を賭けずにログだけ取る(先読み検証)。
+                            # 過去データ1回のバックテストでは単勝ROI183%という好結果が出たが、
+                            # 同じ枠組みの別のバックテスト(EV>=1.2閾値、9/16検証)とは矛盾する
+                            # 結果だったため、実際にお金を賭ける前にリアルタイムで数週間分の
+                            # ログを溜めて再現するか確認する方針(scripts/kelly_report.py参照)。
+                            # オッズ0.0/1.0倍は締切直前でない時のプレースホルダー値なので除外
+                            # (この除外を忘れていたせいでバックテストで見かけ上の好成績が
+                            # 出たバグが過去にあった)。
+                            win_prob_for_kelly = calibrated_win_prob or {}
+                            kelly_entries = {}
+                            for boat, odds in win_odds.items():
+                                if odds <= 1.0:
+                                    continue
+                                p = win_prob_for_kelly.get(boat)
+                                if p is None:
+                                    continue
+                                b = odds - 1
+                                kelly_f = p - (1 - p) / b
+                                kelly_entries[boat] = (p, odds, kelly_f)
+                            if kelly_entries:
+                                save_kelly_log(session, race_id, predicted_at, kelly_entries)
+
                             # 期待値計算にはロジスティック回帰の確率を使う(キャリブレーション
                             # 検証済み: 予測58.0% vs 実際56.3%と実績に近い)。LightGBMの生スコアは
                             # ランキング最適化のためのもので、softmaxしても実際の勝率とは

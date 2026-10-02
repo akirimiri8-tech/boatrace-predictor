@@ -202,3 +202,24 @@ class Odds(SQLModel, table=True):
     place_odds_high: float | None = None
 
     __table_args__ = ({"sqlite_autoincrement": True},)
+
+
+class KellyLog(SQLModel, table=True):
+    """ケリー基準での賭け判断をお金を賭けずにログするだけの「先読み」記録(2026-09-30)。
+
+    過去データでの一回のバックテストでは単勝ROI183%という好結果が出たが、
+    同じ枠組みの過去の検証(EV>=1.2閾値)と矛盾する結果だったため、
+    実際にお金を賭ける前にリアルタイムで何週間か記録を溜めて再現するか確認する。
+    (コース別キャリブレーション補正済みの確率 x 発走前オッズで算出。
+    オッズ0.0/1.0倍は締切直前でない時のプレースホルダー値なので記録しない。)"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    predicted_at: str  # ISO8601タイムスタンプ
+
+    racer_boat_number: int
+    calibrated_prob: float
+    win_odds: float
+    kelly_fraction: float  # p - (1-p)/b、b=win_odds-1。マイナスならエッジ無しと判定
+
+    __table_args__ = ({"sqlite_autoincrement": True},)
