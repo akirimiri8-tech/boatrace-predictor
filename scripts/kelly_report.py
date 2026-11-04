@@ -28,7 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sqlmodel import Session, select
 
 from boatrace_predictor.persistence.db import engine
-from boatrace_predictor.persistence.models import KellyLog, Payout, Race, ResultEntry
+from boatrace_predictor.config import STADIUMS
+from boatrace_predictor.persistence.models import KellyLog, KellyLogFinal, Payout, Race, ResultEntry
 
 
 def main() -> None:
@@ -41,10 +42,23 @@ def main() -> None:
     parser.add_argument(
         "--kelly-scale", type=float, default=1.0, help="フルケリーに対する倍率(0.25なら1/4ケリー)"
     )
+    parser.add_argument(
+        "--final", action="store_true", help="締切直前オッズ版(KellyLogFinal)で集計する"
+    )
+    parser.add_argument(
+        "--top-only", action="store_true", help="各レースで確率最大の1艇だけを対象にする"
+    )
+    parser.add_argument(
+        "--flat-stake", type=float, default=None, help="プラス判定1件あたりの固定賭け金(円)でも集計する"
+    )
+    parser.add_argument(
+        "--today", action="store_true", help="結果未確定の最新日のプラス判定を一覧表示する"
+    )
     args = parser.parse_args()
+    table = KellyLogFinal if args.final else KellyLog
 
     with Session(engine) as session:
-        query = select(KellyLog, Race).join(Race, KellyLog.race_id == Race.id)
+        query = select(table, Race).join(Race, table.race_id == Race.id)
         if args.start:
             query = query.where(Race.date >= args.start)
         if args.end:
@@ -57,6 +71,13 @@ def main() -> None:
             key = (log.race_id, log.racer_boat_number)
             if key not in latest or log.predicted_at > latest[key][0].predicted_at:
                 latest[key] = (log, race)
+
+        if args.top_only:
+            best: dict[int, tuple[KellyLog, Race]] = {}
+            for (race_id, _), (log, race) in latest.items():
+                if race_id not in best or log.calibrated_prob > best[race_id][0].calibrated_prob:
+                    best[race_id] = (log, race)
+            latest = {(rid, v[0].racer_boat_number): v for rid, v in best.items()}
 
         race_ids = {log.race_id for log, _ in latest.values()}
         results = session.exec(
@@ -83,6 +104,26 @@ def main() -> None:
             is_win = winner_by_race[race_id] == boat
             picks.append((race.date, race_id, boat, log.calibrated_prob, log.win_odds, log.kelly_fraction, is_win))
 
+        if args.today:
+            pend = [
+                (race, log) for (rid, _), (log, race) in latest.items()
+                if rid not in winner_by_race and log.kelly_fraction > 0
+            ]
+            if not pend:
+                print("結果未確定でプラス判定のレースはありません")
+            else:
+                latest_date = max(r.date for r, _ in pend)
+                print(f"=== {latest_date} のプラス判定(結果未確定) ===")
+                for race, log in sorted(
+                    (x for x in pend if x[0].date == latest_date),
+                    key=lambda x: (x[0].stadium_number, x[0].number),
+                ):
+                    print(
+                        f"{STADIUMS[race.stadium_number]} {race.number}R: {log.racer_boat_number}号艇 "
+                        f"(確率{log.calibrated_prob:.1%} x オッズ{log.win_odds:.1f}倍, ケリー係数{log.kelly_fraction:.3f})"
+                    )
+            return
+
         print(f"(結果未確定のため除外: {n_unresolved}件)")
         print(f"ログ総数: {len(picks)}件(艇ごと)")
 
@@ -98,6 +139,17 @@ def main() -> None:
         print(f"\n=== ケリー基準でプラス判定: {len(positive)}件(均等{stake}円ベット換算) ===")
         print(f"  的中: {n_hit}件 ({n_hit / len(positive):.1%})")
         print(f"  ROI: {payout_sum / cost:.1%}")
+
+        if args.flat_stake:
+            fs = args.flat_stake
+            pnl = sum(fs * (p[4] - 1) if p[6] else -fs for p in positive)
+            print(f"\n=== 1件{fs:,.0f}円の固定賭けなら ===")
+            print(f"  賭け金合計: {fs * len(positive):,.0f}円 / 損益: {pnl:+,.0f}円")
+            by_day: dict[str, float] = {}
+            for p in positive:
+                by_day[p[0]] = by_day.get(p[0], 0.0) + (fs * (p[4] - 1) if p[6] else -fs)
+            print(f"  1日平均{len(positive) / len(by_day):.0f}件・{fs * len(positive) / len(by_day):,.0f}円/日、"
+                  f"黒字の日 {sum(1 for v in by_day.values() if v > 0)}/{len(by_day)}日、最悪の日 {min(by_day.values()):+,.0f}円")
 
         # 日予算内に正規化したシミュレーション(scripts/daily_report.pyと違い、ケリー係数で
         # 賭け金を傾斜配分する。1日の合計がdaily-budgetを超える場合は比例配分で収める)

@@ -223,3 +223,20 @@ class KellyLog(SQLModel, table=True):
     kelly_fraction: float  # p - (1-p)/b、b=win_odds-1。マイナスならエッジ無しと判定
 
     __table_args__ = ({"sqlite_autoincrement": True},)
+
+
+class KellyLogFinal(SQLModel, table=True):
+    """KellyLogの「締切直前オッズ版」(2026-11-04)。KellyLogは予想確定時点(中央値で締切の約4分前)の
+    オッズで算出するため、実際に買う時の確定オッズより甘い(高い)可能性がある。締切約2分前に
+    オッズだけ取り直して同じ計算をし、より現実的な回収率を確認する。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    predicted_at: str  # 最終オッズを取得した時刻(ISO8601)
+
+    racer_boat_number: int
+    calibrated_prob: float
+    win_odds: float
+    kelly_fraction: float
+
+    __table_args__ = ({"sqlite_autoincrement": True},)

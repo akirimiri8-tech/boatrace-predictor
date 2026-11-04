@@ -180,6 +180,55 @@ _POLL_INTERVAL_SECONDS = 180
 _MAX_POLL_SECONDS = 320 * 60
 
 
+# 2026-11-04: KellyLog(予想確定時点のオッズ)は締切の中央値約4分前の値で、実際に買う時の
+# 確定オッズより甘い可能性がある。予想済みレースの締切約2分前にオッズだけ取り直し、
+# 別テーブル(KellyLogFinal)に同じ計算で記録して、より現実的な回収率を確認する。
+_FINAL_ODDS_WINDOW_SECONDS = 130
+_FINAL_ODDS_MIN_SECONDS = 5
+
+
+def _kelly_entries(win_prob: dict, win_odds: dict) -> dict:
+    """{艇番: (確率, オッズ, ケリー係数)}。オッズ0.0/1.0倍は締切直前でない時の
+    プレースホルダー値なので除外する。"""
+    entries = {}
+    for boat, odds in win_odds.items():
+        if odds <= 1.0:
+            continue
+        p = win_prob.get(boat)
+        if p is None:
+            continue
+        entries[boat] = (p, odds, p - (1 - p) / (odds - 1))
+    return entries
+
+
+def _sweep_final_odds(session, odds_client, target_date, pending: dict, final_done: set) -> None:
+    """締切約2分前のレースのオッズを取り直してKellyLogFinalに保存する(失敗しても本体は止めない)。"""
+    if odds_client is None or not pending:
+        return
+    now = _now_jst()
+    for race_id, info in pending.items():
+        if race_id in final_done:
+            continue
+        remaining = (info["closed_at"] - now).total_seconds()
+        if remaining <= _FINAL_ODDS_MIN_SECONDS:
+            final_done.add(race_id)  # 間に合わなかった(記録なし)
+            continue
+        if remaining > _FINAL_ODDS_WINDOW_SECONDS:
+            continue
+        final_done.add(race_id)
+        try:
+            win_odds, _ = odds_client.fetch_odds(info["stadium"], target_date, info["number"])
+        except Exception as e:
+            logger.warning(f"  最終オッズ取得失敗(race_id={race_id}): {e}")
+            continue
+        entries = _kelly_entries(info["probs"], win_odds)
+        if entries:
+            save_kelly_log(
+                session, race_id, now.isoformat(timespec="seconds"), entries, final=True
+            )
+            session.commit()
+
+
 def _fit_models(history):
     """(model_name, predict_fn) のリストを返す。predict_fn(df) -> pd.Series[win_prob的なスコア]"""
     logistic_model = train(history)
@@ -280,6 +329,8 @@ def main() -> None:
         parts_client = None if args.skip_parts else PartsExchangeClient(browser=browser).__enter__()
 
         predicted_race_ids: set[int] = set()
+        pending_final: dict[int, dict] = {}
+        final_done: set[int] = set()
         n_skipped_finished = 0
         n_skipped_incomplete = 0
         n_ev_observed = 0
@@ -309,6 +360,7 @@ def main() -> None:
                 n_skipped_incomplete = 0
 
                 for race in races:
+                    _sweep_final_odds(session, odds_client, target_date, pending_final, final_done)
                     if race.closed_at and not args.allow_finished:
                         closed_at = datetime.strptime(race.closed_at, "%Y-%m-%d %H:%M:%S")
                         if closed_at <= now:
@@ -412,18 +464,16 @@ def main() -> None:
                             # (この除外を忘れていたせいでバックテストで見かけ上の好成績が
                             # 出たバグが過去にあった)。
                             win_prob_for_kelly = calibrated_win_prob or {}
-                            kelly_entries = {}
-                            for boat, odds in win_odds.items():
-                                if odds <= 1.0:
-                                    continue
-                                p = win_prob_for_kelly.get(boat)
-                                if p is None:
-                                    continue
-                                b = odds - 1
-                                kelly_f = p - (1 - p) / b
-                                kelly_entries[boat] = (p, odds, kelly_f)
+                            kelly_entries = _kelly_entries(win_prob_for_kelly, win_odds)
                             if kelly_entries:
                                 save_kelly_log(session, race_id, predicted_at, kelly_entries)
+                            if race.closed_at and not args.allow_finished:
+                                pending_final[race_id] = {
+                                    "closed_at": datetime.strptime(race.closed_at, "%Y-%m-%d %H:%M:%S"),
+                                    "stadium": race.stadium_number,
+                                    "number": race.race_number,
+                                    "probs": dict(win_prob_for_kelly),
+                                }
 
                             # 期待値計算にはロジスティック回帰の確率を使う(キャリブレーション
                             # 検証済み: 予測58.0% vs 実際56.3%と実績に近い)。LightGBMの生スコアは
@@ -474,6 +524,13 @@ def main() -> None:
                 _upload_progress_in_ci(settings.db_path)
 
                 if n_skipped_incomplete == 0:
+                    # 全レース予想済みでも、締切前の最終オッズ取得が残っていれば待つ
+                    while odds_client is not None and time.monotonic() - poll_start < _MAX_POLL_SECONDS and any(
+                        rid not in final_done for rid in pending_final
+                    ):
+                        _sweep_final_odds(session, odds_client, target_date, pending_final, final_done)
+                        time.sleep(10)
+                    _upload_progress_in_ci(settings.db_path)
                     break  # 全レース処理済み(予想済みか発走済み)、ポーリング終了
 
                 # 2026-09-15: 対象会場拡大(4→24)後、1パス自体が(オッズ/部品交換の
@@ -496,7 +553,9 @@ def main() -> None:
                     f"(直前のチェックに{pass_duration:.0f}秒)。"
                     f"{_POLL_INTERVAL_SECONDS}秒後に再チェックします"
                 )
-                time.sleep(_POLL_INTERVAL_SECONDS)
+                for _ in range(_POLL_INTERVAL_SECONDS // 10):
+                    _sweep_final_odds(session, odds_client, target_date, pending_final, final_done)
+                    time.sleep(10)
         finally:
             if odds_client is not None:
                 odds_client.__exit__(None, None, None)
