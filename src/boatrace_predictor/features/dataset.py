@@ -278,7 +278,24 @@ def build_race_features(session: Session, race_id: int) -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(rows)
+    return _add_race_relative_features(pd.DataFrame(rows))
+
+
+def _add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
+    """同じレースの他の5艇と比べた相対的な強さ。2026-11-05追加: モデルは枠(コース)の影響が
+    大きく、1号艇がB級で他にA1がいるレースでも1号艇を買いかぶっていた(予想41.6% vs 実際
+    35.6%)。2023-24で学習・2025-26で検証した結果、相対特徴の追加でlogloss 0.3300→0.3259、
+    本命の的中率55.5%→56.2%、この条件の買いかぶりは6.0→2.6ポイントに縮んだ(回収率は不変)。"""
+    nat = df["national_win_rate"].astype(float)
+    n = len(df)
+    df["national_win_rate_rank"] = nat.rank(ascending=False, method="min")
+    others_max = [nat.drop(i).max() for i in df.index]
+    df["national_win_rate_gap_to_best_other"] = nat.values - pd.Series(others_max, index=df.index)
+    df["national_win_rate_vs_mean_others"] = nat - (nat.sum() - nat) / max(n - 1, 1)
+    is_a1 = (df["class_number"] == 1).astype(int)
+    df["n_a1_others"] = is_a1.sum() - is_a1
+    df["motor_top2_rate_rank"] = df["motor_top2_rate"].astype(float).rank(ascending=False, method="min")
+    return df
 
 
 def _rank(values: dict[int, float], ascending: bool) -> dict[int, int]:

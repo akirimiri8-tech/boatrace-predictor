@@ -46,6 +46,12 @@ NUMERIC_FEATURES = [
     "moon_age",
     "venue_course_win_rate",
     "racer_course_win_rate",  # 2026-08-22採用。詳細はfeatures/encodings.py参照
+    # 2026-11-05採用: レース内の相対的な強さ(features/dataset.pyの_add_race_relative_features参照)
+    "national_win_rate_rank",
+    "national_win_rate_gap_to_best_other",
+    "national_win_rate_vs_mean_others",
+    "n_a1_others",
+    "motor_top2_rate_rank",
 ]
 
 CATEGORICAL_FEATURES = [

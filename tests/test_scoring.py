@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
 
+from boatrace_predictor.features.dataset import _add_race_relative_features
+
 from boatrace_predictor.models.scoring import predict_win_probability, train
+
+
+def _with_relative_features(race_df: pd.DataFrame) -> pd.DataFrame:
+    return _add_race_relative_features(race_df.copy())
 
 
 def _synthetic_dataset(n_races: int = 200, seed: int = 0) -> pd.DataFrame:
@@ -62,7 +68,10 @@ def _synthetic_dataset(n_races: int = 200, seed: int = 0) -> pd.DataFrame:
                     "win_payout": 250 if boat == win_boat else None,
                 }
             )
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    return pd.concat(
+        [_with_relative_features(g) for _, g in df.groupby("race_id")], ignore_index=True
+    )
 
 
 def test_train_and_predict_returns_valid_probabilities() -> None:

@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
 
+from boatrace_predictor.features.dataset import _add_race_relative_features
+
 from boatrace_predictor.models.ranking import predict_scores, train_ranker
+
+
+def _with_relative_features(race_df: pd.DataFrame) -> pd.DataFrame:
+    return _add_race_relative_features(race_df.copy())
 
 
 def _synthetic_dataset(n_races: int = 150, seed: int = 0) -> pd.DataFrame:
@@ -61,7 +67,10 @@ def _synthetic_dataset(n_races: int = 150, seed: int = 0) -> pd.DataFrame:
                     "place_number": places[boat],
                 }
             )
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    return pd.concat(
+        [_with_relative_features(g) for _, g in df.groupby("race_id")], ignore_index=True
+    )
 
 
 def test_train_ranker_scores_have_expected_shape() -> None:
