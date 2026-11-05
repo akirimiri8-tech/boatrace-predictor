@@ -240,3 +240,20 @@ class KellyLogFinal(SQLModel, table=True):
     kelly_fraction: float
 
     __table_args__ = ({"sqlite_autoincrement": True},)
+
+
+class OddsSnapshot(SQLModel, table=True):
+    """締切の約12分前・7分前・2分前の単勝オッズ(全レース対象、2026-11-05追加)。
+    競馬の大規模研究(JRA 2004-2023)で『締切前の最後の数分でオッズが動いた馬は、同じ最終オッズでも
+    実現リターンが違う』と報告されており、競艇でも成り立つか(直前の資金の動きに予測力があるか)を
+    検証するために、複数時点のオッズを記録する。minutes_beforeは目標時点(12/7/2)で、
+    実際の取得時刻はscraped_at。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    minutes_before: int  # 12 / 7 / 2
+    scraped_at: str  # ISO8601
+    racer_boat_number: int
+    win_odds: float
+
+    __table_args__ = ({"sqlite_autoincrement": True},)

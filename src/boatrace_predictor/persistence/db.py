@@ -11,6 +11,7 @@ from boatrace_predictor.persistence.models import (
     KellyLog,
     KellyLogFinal,
     Odds,
+    OddsSnapshot,
     PartsExchange,
     Payout,
     Prediction,
@@ -312,6 +313,37 @@ def save_kelly_log(
                 calibrated_prob=prob,
                 win_odds=odds,
                 kelly_fraction=kelly_f,
+            )
+        )
+
+
+def save_odds_snapshot(
+    session: Session,
+    race_id: int,
+    minutes_before: int,
+    scraped_at: str,
+    win_odds: dict[int, float],
+) -> None:
+    """締切N分前のオッズを保存する(同レース・同時点の古い記録は置き換える)。
+    オッズ0.0/1.0倍は締切直前でない時のプレースホルダー値なので保存しない。"""
+    existing = session.exec(
+        select(OddsSnapshot).where(
+            OddsSnapshot.race_id == race_id, OddsSnapshot.minutes_before == minutes_before
+        )
+    ).all()
+    for old in existing:
+        session.delete(old)
+    session.flush()
+    for boat, odds in win_odds.items():
+        if odds <= 1.0:
+            continue
+        session.add(
+            OddsSnapshot(
+                race_id=race_id,
+                minutes_before=minutes_before,
+                scraped_at=scraped_at,
+                racer_boat_number=boat,
+                win_odds=odds,
             )
         )
 

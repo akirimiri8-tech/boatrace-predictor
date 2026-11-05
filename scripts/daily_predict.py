@@ -152,6 +152,7 @@ from boatrace_predictor.persistence.db import (
     init_db,
     save_kelly_log,
     save_odds,
+    save_odds_snapshot,
     save_parts_exchange,
     save_prediction,
     save_race,
@@ -227,6 +228,53 @@ def _sweep_final_odds(session, odds_client, target_date, pending: dict, final_do
                 session, race_id, now.isoformat(timespec="seconds"), entries, final=True
             )
             session.commit()
+
+
+# 2026-11-05: 締切12分前・7分前・2分前の単勝オッズを全レースで記録する(OddsSnapshot)。
+# 直前の資金の動きに予測力があるかを後から検証するため(models.pyのOddsSnapshot参照)。
+_SNAPSHOT_TARGETS_SECONDS = (720, 420, 120)
+_SNAPSHOT_WINDOW_SECONDS = 150
+
+
+def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> None:
+    if odds_client is None or not snap_pending:
+        return
+    now = _now_jst()
+    for race_id, info in snap_pending.items():
+        remaining = (info["closed_at"] - now).total_seconds()
+        for t in _SNAPSHOT_TARGETS_SECONDS:
+            if t in info["done"]:
+                continue
+            if remaining <= t - _SNAPSHOT_WINDOW_SECONDS:
+                info["done"].add(t)  # 間に合わなかった(記録なし)
+                continue
+            if remaining > t:
+                continue
+            info["done"].add(t)
+            try:
+                win_odds, _ = odds_client.fetch_odds(info["stadium"], target_date, info["number"])
+            except Exception as e:
+                logger.warning(f"  オッズスナップショット取得失敗(race_id={race_id}, {t}s): {e}")
+                continue
+            if win_odds:
+                save_odds_snapshot(
+                    session, race_id, t // 60, now.isoformat(timespec="seconds"), win_odds
+                )
+                session.commit()
+
+
+def _snapshots_open(snap_pending: dict) -> bool:
+    now = _now_jst()
+    return any(
+        (info["closed_at"] - now).total_seconds() > 0
+        and len(info["done"]) < len(_SNAPSHOT_TARGETS_SECONDS)
+        for info in snap_pending.values()
+    )
+
+
+def _sweep_all(session, odds_client, target_date, pending, final_done, snap_pending) -> None:
+    _sweep_snapshots(session, odds_client, target_date, snap_pending)
+    _sweep_final_odds(session, odds_client, target_date, pending, final_done)
 
 
 def _fit_models(history):
@@ -330,6 +378,7 @@ def main() -> None:
 
         predicted_race_ids: set[int] = set()
         pending_final: dict[int, dict] = {}
+        snap_pending: dict[int, dict] = {}
         final_done: set[int] = set()
         n_skipped_finished = 0
         n_skipped_incomplete = 0
@@ -353,6 +402,17 @@ def main() -> None:
                     race_ids[(race.stadium_number, race.race_number)] = race_id
                 session.commit()
 
+                for race in races:
+                    if race.closed_at and not args.allow_finished:
+                        rid_ = race_ids[(race.stadium_number, race.race_number)]
+                        if rid_ not in snap_pending:
+                            snap_pending[rid_] = {
+                                "closed_at": datetime.strptime(race.closed_at, "%Y-%m-%d %H:%M:%S"),
+                                "stadium": race.stadium_number,
+                                "number": race.race_number,
+                                "done": set(),
+                            }
+
                 # 3. レースごとに予想してログ保存(発走済みは原則スキップ)
                 now = _now_jst()
                 predicted_at = now.isoformat(timespec="seconds")
@@ -360,7 +420,7 @@ def main() -> None:
                 n_skipped_incomplete = 0
 
                 for race in races:
-                    _sweep_final_odds(session, odds_client, target_date, pending_final, final_done)
+                    _sweep_all(session, odds_client, target_date, pending_final, final_done, snap_pending)
                     if race.closed_at and not args.allow_finished:
                         closed_at = datetime.strptime(race.closed_at, "%Y-%m-%d %H:%M:%S")
                         if closed_at <= now:
@@ -525,10 +585,11 @@ def main() -> None:
 
                 if n_skipped_incomplete == 0:
                     # 全レース予想済みでも、締切前の最終オッズ取得が残っていれば待つ
-                    while odds_client is not None and time.monotonic() - poll_start < _MAX_POLL_SECONDS and any(
-                        rid not in final_done for rid in pending_final
+                    while odds_client is not None and time.monotonic() - poll_start < _MAX_POLL_SECONDS and (
+                        any(rid not in final_done for rid in pending_final)
+                        or _snapshots_open(snap_pending)
                     ):
-                        _sweep_final_odds(session, odds_client, target_date, pending_final, final_done)
+                        _sweep_all(session, odds_client, target_date, pending_final, final_done, snap_pending)
                         time.sleep(10)
                     _upload_progress_in_ci(settings.db_path)
                     break  # 全レース処理済み(予想済みか発走済み)、ポーリング終了
@@ -554,7 +615,7 @@ def main() -> None:
                     f"{_POLL_INTERVAL_SECONDS}秒後に再チェックします"
                 )
                 for _ in range(_POLL_INTERVAL_SECONDS // 10):
-                    _sweep_final_odds(session, odds_client, target_date, pending_final, final_done)
+                    _sweep_all(session, odds_client, target_date, pending_final, final_done, snap_pending)
                     time.sleep(10)
         finally:
             if odds_client is not None:
