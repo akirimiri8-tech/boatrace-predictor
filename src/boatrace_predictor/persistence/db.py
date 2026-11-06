@@ -9,6 +9,7 @@ from boatrace_predictor.data.schemas import RaceProgram
 from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
     KellyLog,
+    ExactaOddsSnapshot,
     KellyLogFinal,
     Odds,
     OddsSnapshot,
@@ -344,6 +345,38 @@ def save_odds_snapshot(
                 scraped_at=scraped_at,
                 racer_boat_number=boat,
                 win_odds=odds,
+            )
+        )
+
+
+def save_exacta_odds_snapshot(
+    session: Session,
+    race_id: int,
+    minutes_before: int,
+    scraped_at: str,
+    odds: dict[str, float],
+) -> None:
+    """締切N分前の2連単オッズ(全30通り)を保存する。同レース・同時点の古い記録は置き換える。
+    1.0倍以下は締切直前でない時のプレースホルダー値なので保存しない。"""
+    existing = session.exec(
+        select(ExactaOddsSnapshot).where(
+            ExactaOddsSnapshot.race_id == race_id,
+            ExactaOddsSnapshot.minutes_before == minutes_before,
+        )
+    ).all()
+    for old in existing:
+        session.delete(old)
+    session.flush()
+    for combination, value in odds.items():
+        if value <= 1.0:
+            continue
+        session.add(
+            ExactaOddsSnapshot(
+                race_id=race_id,
+                minutes_before=minutes_before,
+                scraped_at=scraped_at,
+                combination=combination,
+                odds=value,
             )
         )
 

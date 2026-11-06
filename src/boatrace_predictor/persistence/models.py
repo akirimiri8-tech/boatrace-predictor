@@ -257,3 +257,19 @@ class OddsSnapshot(SQLModel, table=True):
     win_odds: float
 
     __table_args__ = ({"sqlite_autoincrement": True},)
+
+
+class ExactaOddsSnapshot(SQLModel, table=True):
+    """締切の約12分前・7分前・2分前の2連単オッズ(全30通り、全レース対象、2026-11-07追加)。
+    『期待値の高い並びだけを買う』検証が、確定オッズで選んでいるため実際に買える時点の
+    オッズでは成り立たない可能性があり、買える時点(締切前)のオッズで再評価するために記録する。
+    combination は『1着-2着』(例: '1-3')。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    minutes_before: int  # 12 / 7 / 2
+    scraped_at: str
+    combination: str
+    odds: float
+
+    __table_args__ = ({"sqlite_autoincrement": True},)

@@ -134,6 +134,7 @@ def _prevent_sleep():
 
 from boatrace_predictor.config import STADIUMS, settings
 from boatrace_predictor.data.client import BoatraceOpenAPIClient
+from boatrace_predictor.data.exacta_odds_client import fetch_exacta_odds
 from boatrace_predictor.data.odds_client import OddsClient
 from boatrace_predictor.data.parts_exchange_client import PartsExchangeClient
 from boatrace_predictor.features.calibration import apply_course_calibration, fit_course_calibration
@@ -150,6 +151,7 @@ from boatrace_predictor.models.scoring import (
 from boatrace_predictor.persistence.db import (
     engine,
     init_db,
+    save_exacta_odds_snapshot,
     save_kelly_log,
     save_odds,
     save_odds_snapshot,
@@ -261,6 +263,17 @@ def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> N
                     session, race_id, t // 60, now.isoformat(timespec="seconds"), win_odds
                 )
                 session.commit()
+            # 2連単(全30通り)も同じ時点で記録する。静的HTMLなのでPlaywrightは使わない。
+            # 失敗しても単勝の記録や予想は止めない。
+            try:
+                exacta = fetch_exacta_odds(info["stadium"], str(target_date), info["number"])
+                if exacta:
+                    save_exacta_odds_snapshot(
+                        session, race_id, t // 60, now.isoformat(timespec="seconds"), exacta
+                    )
+                    session.commit()
+            except Exception as e:
+                logger.warning(f"  2連単オッズ取得失敗(race_id={race_id}, {t}s): {e}")
 
 
 def _snapshots_open(snap_pending: dict) -> bool:
