@@ -234,8 +234,11 @@ def _sweep_final_odds(session, odds_client, target_date, pending: dict, final_do
 
 # 2026-11-05: 締切12分前・7分前・2分前の単勝オッズを全レースで記録する(OddsSnapshot)。
 # 直前の資金の動きに予測力があるかを後から検証するため(models.pyのOddsSnapshot参照)。
-_SNAPSHOT_TARGETS_SECONDS = (720, 420, 120)
-_SNAPSHOT_WINDOW_SECONDS = 150
+# 2026-11-09: 締切1分前(60秒)の2連単オッズも追加(買える最終時点に最も近い)。1分前は取得に
+# 時間をかけられないので、静的HTMLの2連単だけ記録し(単勝のPlaywrightは省く)、窓も狭くする。
+_SNAPSHOT_TARGETS_SECONDS = (720, 420, 120, 60)
+_SNAPSHOT_WINDOWS = {720: 150, 420: 150, 120: 100, 60: 40}
+_SNAPSHOT_EXACTA_ONLY = {60}
 
 
 def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> None:
@@ -247,17 +250,19 @@ def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> N
         for t in _SNAPSHOT_TARGETS_SECONDS:
             if t in info["done"]:
                 continue
-            if remaining <= t - _SNAPSHOT_WINDOW_SECONDS:
+            if remaining <= t - _SNAPSHOT_WINDOWS[t]:
                 info["done"].add(t)  # 間に合わなかった(記録なし)
                 continue
             if remaining > t:
                 continue
             info["done"].add(t)
-            try:
-                win_odds, _ = odds_client.fetch_odds(info["stadium"], target_date, info["number"])
-            except Exception as e:
-                logger.warning(f"  オッズスナップショット取得失敗(race_id={race_id}, {t}s): {e}")
-                continue
+            win_odds = None
+            if t not in _SNAPSHOT_EXACTA_ONLY:
+                try:
+                    win_odds, _ = odds_client.fetch_odds(info["stadium"], target_date, info["number"])
+                except Exception as e:
+                    logger.warning(f"  オッズスナップショット取得失敗(race_id={race_id}, {t}s): {e}")
+                    continue
             if win_odds:
                 save_odds_snapshot(
                     session, race_id, t // 60, now.isoformat(timespec="seconds"), win_odds
