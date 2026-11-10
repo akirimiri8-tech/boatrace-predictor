@@ -273,3 +273,19 @@ class ExactaOddsSnapshot(SQLModel, table=True):
     odds: float
 
     __table_args__ = ({"sqlite_autoincrement": True},)
+
+
+class LivePick(SQLModel, table=True):
+    """締切約1分前の2連単オッズで判定した『買い候補』(ペーパー、2026-11-10追加)。
+    モデル勝率とオッズを混ぜた期待値(blend_ev.py)が1.1以上の並びを全部記録する
+    (しきい値1.2/1.3などは後から ev で絞って集計する)。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    race_id: int = Field(foreign_key="race.id", index=True)
+    decided_at: str  # ISO8601
+    combination: str  # '1着-2着'
+    odds: float
+    blended_prob: float
+    ev: float
+
+    __table_args__ = ({"sqlite_autoincrement": True},)

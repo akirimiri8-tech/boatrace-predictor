@@ -137,6 +137,7 @@ from boatrace_predictor.data.client import BoatraceOpenAPIClient
 from boatrace_predictor.data.exacta_odds_client import fetch_exacta_odds
 from boatrace_predictor.data.odds_client import OddsClient
 from boatrace_predictor.data.parts_exchange_client import PartsExchangeClient
+from boatrace_predictor.features.blend_ev import blended_exacta_picks
 from boatrace_predictor.features.calibration import apply_course_calibration, fit_course_calibration
 from boatrace_predictor.features.dataset import build_dataset, build_race_features
 from boatrace_predictor.features.encodings import apply_course_encodings, fit_course_encodings
@@ -153,6 +154,7 @@ from boatrace_predictor.persistence.db import (
     init_db,
     save_exacta_odds_snapshot,
     save_kelly_log,
+    save_live_picks,
     save_odds,
     save_odds_snapshot,
     save_parts_exchange,
@@ -239,6 +241,8 @@ def _sweep_final_odds(session, odds_client, target_date, pending: dict, final_do
 _SNAPSHOT_TARGETS_SECONDS = (720, 420, 120, 60)
 _SNAPSHOT_WINDOWS = {720: 150, 420: 150, 120: 100, 60: 40}
 _SNAPSHOT_EXACTA_ONLY = {60}
+# race_id -> コース別補正済みの勝率(直近の予想)。1分前の判定(LivePick)で使う。
+_LIVE_PROBS: dict[int, dict[int, float]] = {}
 
 
 def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> None:
@@ -277,6 +281,11 @@ def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> N
                         session, race_id, t // 60, now.isoformat(timespec="seconds"), exacta
                     )
                     session.commit()
+                    # 1分前: 混合確率x1分前オッズで期待値1.1以上の並びを『買い候補』として記録する(ペーパー)
+                    if t == 60 and race_id in _LIVE_PROBS:
+                        picks = blended_exacta_picks(_LIVE_PROBS[race_id], exacta, min_ev=1.1)
+                        save_live_picks(session, race_id, now.isoformat(timespec="seconds"), picks)
+                        session.commit()
             except Exception as e:
                 logger.warning(f"  2連単オッズ取得失敗(race_id={race_id}, {t}s): {e}")
 
@@ -497,6 +506,7 @@ def main() -> None:
                             primary_scores_series = scores_series
                         if model_name == "logistic_regression":
                             calibrated_win_prob = scores
+                            _LIVE_PROBS[race_id] = {int(k): float(v) for k, v in scores.items()}
                     predicted_race_ids.add(race_id)
 
                     name = STADIUMS[race.stadium_number]

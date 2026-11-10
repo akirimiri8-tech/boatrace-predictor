@@ -89,5 +89,28 @@ def main() -> None:
             )
 
 
+def live_pick_report(db: str, stake: int = 5000) -> None:
+    """GitHub Actionsが締切1分前に判定して記録した買い候補(LivePick)の集計(確定払戻で損益)。"""
+    con = sqlite3.connect(db)
+    try:
+        rows = con.execute("SELECT race_id, combination, ev FROM livepick").fetchall()
+    except sqlite3.OperationalError:
+        print("\nLivePickテーブルなし(まだ記録が始まっていません)")
+        return
+    pay = {}
+    for rid, comb, amt in con.execute("SELECT race_id, combination, amount FROM payout WHERE bet_type='exacta'"):
+        pay.setdefault(rid, {})[comb] = amt / 100
+    print("\n=== 締切1分前の判定(クラウド記録)===")
+    for th in THRESHOLDS:
+        sel = [(rid, c) for rid, c, ev in rows if ev >= th and rid in pay]
+        if not sel:
+            print(f"  期待値{th}以上: 結果確定済みの買い目なし")
+            continue
+        ret = sum(pay[rid].get(c, 0.0) for rid, c in sel)
+        hit = sum(1 for rid, c in sel if c in pay[rid])
+        print(f"  期待値{th}以上: {len(sel)}点 的中{hit} 回収率{ret / len(sel):.0%} 損益{(ret - len(sel)) * stake:+,.0f}円")
+
+
 if __name__ == "__main__":
     main()
+    live_pick_report(sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "boatrace.db")

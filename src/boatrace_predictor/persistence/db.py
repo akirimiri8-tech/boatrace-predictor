@@ -10,6 +10,7 @@ from boatrace_predictor.data.tide_schemas import DayChart
 from boatrace_predictor.persistence.models import (
     KellyLog,
     ExactaOddsSnapshot,
+    LivePick,
     KellyLogFinal,
     Odds,
     OddsSnapshot,
@@ -407,3 +408,12 @@ def save_parts_exchange(
                 parts=",".join(parts),
             )
         )
+
+
+def save_live_picks(session: Session, race_id: int, decided_at: str, picks: list) -> None:
+    """picks: blended_exacta_picks の戻り値 [(並び, オッズ, 混合確率, 期待値), ...]。同レースの古い記録は置き換える。"""
+    for old in session.exec(select(LivePick).where(LivePick.race_id == race_id)).all():
+        session.delete(old)
+    session.flush()
+    for comb, od, pb, ev in picks:
+        session.add(LivePick(race_id=race_id, decided_at=decided_at, combination=comb, odds=od, blended_prob=pb, ev=ev))
