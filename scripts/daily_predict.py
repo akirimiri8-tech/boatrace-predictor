@@ -59,6 +59,7 @@ import ctypes
 import os
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -245,6 +246,68 @@ _SNAPSHOT_EXACTA_ONLY = {60}
 _LIVE_PROBS: dict[int, dict[int, float]] = {}
 
 
+# 2026-11-11: 1分前の記録が約半分のレースで抜けた。原因は、メインスレッドが(1)レースごとの予想処理、
+# (2)パスごとの進捗アップロード(DB 200MB超で最大120秒)でブロックされ、窓(40秒)の間に
+# _sweep_snapshotsが回らなかったため。1分前だけは専用スレッドで、メインの処理と無関係に
+# 締切62秒前〜5秒前に取りに行く(レースごとに別スレッドで取得し、DB書き込みはリトライ)。
+_ONE_MIN_WORKER_ACTIVE = threading.Event()
+_ONE_MIN_START_SECONDS = 62
+_ONE_MIN_MIN_SECONDS = 5
+
+
+def _fetch_and_save_one_minute(race_id: int, info: dict, target_date) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    t0 = _now_jst()
+    try:
+        exacta = fetch_exacta_odds(info["stadium"], str(target_date), info["number"])
+    except Exception as e:
+        logger.warning(f"  1分前の2連単オッズ取得失敗(race_id={race_id}): {e}")
+        return
+    if not exacta:
+        return
+    left = (info["closed_at"] - _now_jst()).total_seconds()
+    if left <= 0:
+        return  # 取得中に締切を過ぎた(買えない時点のオッズは記録しない)
+    stamp = t0.isoformat(timespec="seconds")
+    for attempt in range(6):
+        try:
+            with Session(engine) as sess:
+                save_exacta_odds_snapshot(sess, race_id, 1, stamp, exacta)
+                sess.commit()
+                if race_id in _LIVE_PROBS:
+                    picks = blended_exacta_picks(_LIVE_PROBS[race_id], exacta, min_ev=1.1)
+                    save_live_picks(sess, race_id, stamp, picks)
+                    sess.commit()
+            return
+        except OperationalError as e:  # メインスレッドの書き込みと衝突(database is locked)
+            logger.warning(f"  1分前の保存をリトライ({attempt + 1}/6, race_id={race_id}): {e}")
+            time.sleep(1.5)
+
+
+def _one_minute_worker(stop: threading.Event, snap_pending: dict, target_date) -> None:
+    while not stop.is_set():
+        try:
+            items = list(snap_pending.items())
+        except RuntimeError:  # メインスレッドが辞書を更新中
+            stop.wait(0.5)
+            continue
+        now = _now_jst()
+        for race_id, info in items:
+            if 60 in info["done"]:
+                continue
+            remaining = (info["closed_at"] - now).total_seconds()
+            if remaining > _ONE_MIN_START_SECONDS:
+                continue
+            info["done"].add(60)
+            if remaining <= _ONE_MIN_MIN_SECONDS:
+                continue  # 間に合わなかった
+            threading.Thread(
+                target=_fetch_and_save_one_minute, args=(race_id, info, target_date), daemon=True
+            ).start()
+        stop.wait(1.0)
+
+
 def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> None:
     if odds_client is None or not snap_pending:
         return
@@ -254,6 +317,8 @@ def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> N
         for t in _SNAPSHOT_TARGETS_SECONDS:
             if t in info["done"]:
                 continue
+            if t == 60 and _ONE_MIN_WORKER_ACTIVE.is_set():
+                continue  # 1分前は専用スレッド(_one_minute_worker)が担当する
             if remaining <= t - _SNAPSHOT_WINDOWS[t]:
                 info["done"].add(t)  # 間に合わなかった(記録なし)
                 continue
@@ -407,6 +472,12 @@ def main() -> None:
         pending_final: dict[int, dict] = {}
         snap_pending: dict[int, dict] = {}
         final_done: set[int] = set()
+        one_min_stop = threading.Event()
+        if odds_client is not None and not args.allow_finished:
+            _ONE_MIN_WORKER_ACTIVE.set()
+            threading.Thread(
+                target=_one_minute_worker, args=(one_min_stop, snap_pending, target_date), daemon=True
+            ).start()
         n_skipped_finished = 0
         n_skipped_incomplete = 0
         n_ev_observed = 0
@@ -646,6 +717,8 @@ def main() -> None:
                     _sweep_all(session, odds_client, target_date, pending_final, final_done, snap_pending)
                     time.sleep(10)
         finally:
+            one_min_stop.set()
+            _ONE_MIN_WORKER_ACTIVE.clear()
             if odds_client is not None:
                 odds_client.__exit__(None, None, None)
             if parts_client is not None:
