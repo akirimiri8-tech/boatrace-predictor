@@ -120,3 +120,11 @@ jobs:
         if: always()  # 途中で失敗しても、そこまでの進捗は保存しておく
         run: |
           gh release upload db-latest data/boatrace.db --repo "${{ github.repository }}" --clobber
+
+      # 2026-11-12: 先読み検証(買える時点のオッズ→確定払戻)の集計をMacのループからクラウドに移した。
+      # 結果はログに出し、リリース db-latest に forward-report.txt として置く(Macが不要)。
+      - name: Forward-test report
+        if: always()
+        run: |
+          python scripts/forward_test.py data/boatrace.db | tee forward-report.txt
+          gh release upload db-latest forward-report.txt --repo "${{ github.repository }}" --clobber
