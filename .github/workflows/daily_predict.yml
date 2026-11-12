@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: write  # gh release upload に必要
+  actions: write   # 次の実行を自分で予約する(gh workflow run)のに必要
 
 concurrency:
   group: daily-predict
@@ -44,6 +45,28 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      # 2026-11-12: cronは15分おきにしても、GitHub側が予定を落として何時間も起動しなかった
+      # (11/11 21:46〜11/12 11:12のあいだ1回も起動せず、朝のレースが丸ごと抜けた)。
+      # cronに頼らず、実行の冒頭で『次の実行』を自分で予約する(workflow_dispatch)。
+      # concurrencyで待ち行列は1件なので、前の実行が終わった瞬間に次が始まり、鎖が途切れない。
+      # cronは鎖が切れたときの保険として残す。
+      - name: Queue the next run (self-chaining)
+        run: gh workflow run daily_predict.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
+
+      # 夜間(JST 21時〜5時)はレースが無いので、5:45まで待ってから本処理に入る。
+      # 待たずに終わると、鎖が夜通し短い実行を繰り返してしまう。
+      - name: Sleep through the night
+        run: |
+          h=$(TZ=Asia/Tokyo date +%-H)
+          if [ "$h" -ge 21 ] || [ "$h" -lt 5 ]; then
+            if [ "$h" -ge 21 ]; then day=tomorrow; else day=today; fi
+            target=$(TZ=Asia/Tokyo date -d "$day 05:45" +%s)
+            s=$((target - $(date +%s)))
+            [ "$s" -gt 18000 ] && s=18000
+            [ "$s" -gt 0 ] && echo "夜間のため${s}秒待機" && sleep "$s"
+          fi
+          true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
