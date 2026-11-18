@@ -121,6 +121,17 @@ jobs:
         if: always() && (steps.night.outputs.slept == 'true' || steps.download.outcome == 'success')
         run: gh workflow run daily_predict.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
 
+      # 2026-11-18: 実行の切れ目や事故で、前日以前のレース結果が入らないことがあった(11/17は132中17レース欠け)。
+      # 直近3日分(前日まで)の出走表・結果を毎回取り直す(上書き保存でレースIDは変わらない)。失敗しても本処理は続ける。
+      - name: Backfill results of the last 3 days
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/backfill.py \
+            --start "$(TZ=Asia/Tokyo date -d '3 days ago' +%F)" \
+            --end "$(TZ=Asia/Tokyo date -d 'yesterday' +%F)" \
+            --stadiums $(seq 1 24)
+
       - name: Run daily_predict.py
         if: steps.download.outcome == 'success'
         run: python scripts/daily_predict.py
