@@ -1,0 +1,43 @@
+name: probe-odds-feed
+# 一時的な確認用: 自前のオッズ配信APIの応答の形と中身を確かめる(合言葉はログに出さない)
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      ODDS_FEED_URL: ${{ secrets.ODDS_FEED_URL }}
+      ODDS_FEED_TOKEN: ${{ secrets.ODDS_FEED_TOKEN }}
+    steps:
+      - run: pip install -q httpx
+      - shell: python
+        run: |
+          import os, json, httpx, datetime
+          base, tok = os.environ["ODDS_FEED_URL"].rstrip("/"), os.environ["ODDS_FEED_TOKEN"]
+          today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
+          res = httpx.get(f"https://boatraceopenapi.github.io/api/v1/{today[:4]}/{today}.json", timeout=30).json()
+          races = [r for r in res.get("races", res if isinstance(res, list) else []) if isinstance(r, dict)]
+          print("Open API races today:", len(races))
+          checked = 0
+          for r in races:
+              st = r.get("race_stadium_number") or r.get("stadium_number"); rn = r.get("race_number") or r.get("number")
+              if not st or not rn: continue
+              resp = httpx.get(base + "/v1/odds", params={"date": today, "venue": st, "race": rn, "type": "exacta"},
+                               headers={"Authorization": f"Bearer {tok}"}, timeout=20)
+              print(f"venue={st} race={rn} status={resp.status_code}")
+              if resp.status_code != 200:
+                  print(resp.text[:300]); checked += 1
+                  if checked >= 3: break
+                  continue
+              j = resp.json()
+              snaps = j.get("snapshots", [])
+              print("  keys:", list(j.keys()), " snapshots:", len(snaps))
+              for s in snaps:
+                  o = s.get("odds", {})
+                  print(f"  label={s.get('label')} captured_at={s.get('captured_at')} n_odds={len(o)} 1-2={o.get('1-2')} 1-3={o.get('1-3')}")
+              pay = None
+              try:
+                  pay = r.get("result", {}).get("payouts", {}).get("exacta") or r.get("payouts", {}).get("exacta")
+              except Exception: pass
+              print("  official exacta payout (Open API):", pay)
+              checked += 1
+              if checked >= 3: break
