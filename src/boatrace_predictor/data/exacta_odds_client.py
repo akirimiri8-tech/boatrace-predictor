@@ -89,7 +89,11 @@ def fetch_exacta_odds(stadium_number: int, race_date: str, race_number: int, cli
     own = client is None
     client = client or httpx.Client(headers=_HEADERS, timeout=30)
     try:
-        return parse_exacta_odds(client.get(_URL, params=params).text)
+        resp = client.get(_URL, params=params)
+        # 2026-11-18: 公式サイトがこのクライアントに403(Access Denied)を返すようになったのに、
+        # 空の結果として黙って処理されて気づくのが遅れた。失敗は例外にしてログに残す。
+        resp.raise_for_status()
+        return parse_exacta_odds(resp.text)
     finally:
         if own:
             client.close()
