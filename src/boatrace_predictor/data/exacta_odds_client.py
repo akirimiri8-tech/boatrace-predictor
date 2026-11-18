@@ -4,7 +4,11 @@ oddstf(単勝・複勝)と違い、odds2tf は静的HTMLなのでPlaywright不�
 締切前の複数時点で記録し、確定オッズとの差を見るために使う(OddsSnapshotの2連単版)。
 """
 
+import os
+import time
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
+from typing import Any
 
 import httpx
 
@@ -83,8 +87,50 @@ def parse_exacta_odds(html: str) -> dict[str, float]:
     return odds
 
 
+# 2026-11-18: 2連単オッズは自前のオッズ配信API(別システム)から読めるようにした。
+# 接続先と合言葉は環境変数で渡す(コードやリポジトリには置かない)。未設定なら従来どおり直接取得する。
+_FEED_URL_ENV = "ODDS_FEED_URL"
+_FEED_TOKEN_ENV = "ODDS_FEED_TOKEN"
+# 配信側は締切前の決まった時点で記録する。呼び出し側は「いま」のオッズとして時刻を付けて保存するので、
+# 古い記録を返すと別時点のオッズが紛れ込む。新しい記録だけを採用し、まだ無ければ少し待つ。
+_FEED_MAX_AGE_SECONDS = 60.0
+_FEED_WAIT_SECONDS = 30.0
+_FEED_POLL_SECONDS = 3.0
+_JST = timezone(timedelta(hours=9))
+
+
+def _latest_fresh_feed_odds(snapshots: list[dict[str, Any]], now: datetime, max_age: float) -> dict[str, float]:
+    """配信APIの記録のうち、max_age秒以内に取られた最新のものを {'1-2': 3.5, ...} で返す。無ければ空。"""
+    best: tuple[datetime, dict[str, Any]] | None = None
+    for snap in snapshots:
+        captured = datetime.fromisoformat(snap["captured_at"])
+        if (now - captured).total_seconds() > max_age:
+            continue
+        if best is None or captured > best[0]:
+            best = (captured, snap["odds"])
+    if best is None:
+        return {}
+    return {k: float(v) for k, v in best[1].items() if v is not None}
+
+
+def _fetch_from_feed(base_url: str, token: str, stadium_number: int, race_date: str, race_number: int) -> dict[str, float]:
+    params = {"date": race_date.replace("-", ""), "venue": stadium_number, "race": race_number, "type": "exacta"}
+    deadline = time.monotonic() + _FEED_WAIT_SECONDS
+    with httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=15) as client:
+        while True:
+            resp = client.get(base_url.rstrip("/") + "/v1/odds", params=params)
+            resp.raise_for_status()
+            odds = _latest_fresh_feed_odds(resp.json()["snapshots"], datetime.now(_JST), _FEED_MAX_AGE_SECONDS)
+            if odds or time.monotonic() >= deadline:
+                return odds
+            time.sleep(_FEED_POLL_SECONDS)
+
+
 def fetch_exacta_odds(stadium_number: int, race_date: str, race_number: int, client: httpx.Client | None = None) -> dict[str, float]:
     """race_date は 'YYYY-MM-DD' または 'YYYYMMDD'。"""
+    feed_url, feed_token = os.environ.get(_FEED_URL_ENV), os.environ.get(_FEED_TOKEN_ENV)
+    if feed_url and feed_token:
+        return _fetch_from_feed(feed_url, feed_token, stadium_number, race_date, race_number)
     params = {"rno": race_number, "jcd": f"{stadium_number:02d}", "hd": race_date.replace("-", "")}
     own = client is None
     client = client or httpx.Client(headers=_HEADERS, timeout=30)

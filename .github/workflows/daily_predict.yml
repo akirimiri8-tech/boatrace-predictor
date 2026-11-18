@@ -134,6 +134,10 @@ jobs:
 
       - name: Run daily_predict.py
         if: steps.download.outcome == 'success'
+        # 2連単オッズは自前のオッズ配信APIから読む。接続先と合言葉はSecretsで渡す。
+        env:
+          ODDS_FEED_URL: ${{ secrets.ODDS_FEED_URL }}
+          ODDS_FEED_TOKEN: ${{ secrets.ODDS_FEED_TOKEN }}
         run: python scripts/daily_predict.py
 
       - name: Upload updated DB snapshot

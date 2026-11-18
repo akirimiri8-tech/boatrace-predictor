@@ -1,6 +1,7 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from boatrace_predictor.data.exacta_odds_client import parse_exacta_odds
+from boatrace_predictor.data.exacta_odds_client import _latest_fresh_feed_odds, parse_exacta_odds
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "odds2tf_exacta_table.html"
 
@@ -31,3 +32,25 @@ def test_direction_matches_real_payout() -> None:
 
 def test_returns_empty_for_unrelated_html() -> None:
     assert parse_exacta_odds("<html><body>no table</body></html>") == {}
+
+
+_NOW = datetime(2026, 11, 18, 19, 24, 30, tzinfo=timezone(timedelta(hours=9)))
+
+
+def _snap(captured_at: str, odds: dict) -> dict:
+    return {"captured_at": captured_at, "odds": odds}
+
+
+def test_feed_uses_latest_fresh_snapshot() -> None:
+    snaps = [
+        _snap("2026-11-18T19:24:00+09:00", {"1-2": 3.0}),
+        _snap("2026-11-18T19:24:20+09:00", {"1-2": 2.8, "1-3": None}),
+    ]
+    # 欠場などで値の無い並びは含めない(直接取得のときと同じ扱い)
+    assert _latest_fresh_feed_odds(snaps, _NOW, 60) == {"1-2": 2.8}
+
+
+def test_feed_ignores_stale_snapshot() -> None:
+    # 5分前の記録を「いま」のオッズとして保存してしまわないこと
+    snaps = [_snap("2026-11-18T19:19:00+09:00", {"1-2": 3.0})]
+    assert _latest_fresh_feed_odds(snaps, _NOW, 60) == {}
