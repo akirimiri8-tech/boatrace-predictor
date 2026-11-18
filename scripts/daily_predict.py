@@ -100,12 +100,14 @@ def _upload_progress_in_ci(db_path: Path) -> None:
     if not repo:
         return
     try:
+        # 2026-11-18: --clobberの直接アップロードは、途中で止まるとDBが消える(実際に起きた)。
+        # 別名で上げきってから名前を付け替えるスクリプトを使う。途中で止まっても元のDBは残る。
         subprocess.run(
-            ["gh", "release", "upload", "db-latest", str(db_path), "--repo", repo, "--clobber"],
+            ["bash", str(Path(__file__).resolve().parent / "upload_db.sh"), str(db_path), repo],
             check=True,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=600,
         )
     except Exception as e:  # 進捗アップロードの失敗で本体の処理を止めない
         logger.warning(f"進捗アップロード失敗: {e}")

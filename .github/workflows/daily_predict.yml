@@ -45,17 +45,11 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      # 2026-11-12: cronは15分おきにしても、GitHub側が予定を落として何時間も起動しなかった
-      # (11/11 21:46〜11/12 11:12のあいだ1回も起動せず、朝のレースが丸ごと抜けた)。
-      # cronに頼らず、実行の冒頭で『次の実行』を自分で予約する(workflow_dispatch)。
-      # concurrencyで待ち行列は1件なので、前の実行が終わった瞬間に次が始まり、鎖が途切れない。
-      # cronは鎖が切れたときの保険として残す。
-      - name: Queue the next run (self-chaining)
-        run: gh workflow run daily_predict.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
-
-      # 夜間(JST 21時〜5時)はレースが無いので、5:45まで待ってから本処理に入る。
-      # 待たずに終わると、鎖が夜通し短い実行を繰り返してしまう。
+      # 夜間(JST 21時〜5時)はレースが無いので、5:45まで(最大300分)待って、次の実行を予約して終わる。
+      # 2026-11-18: 以前は待機のあとに本処理まで続けていたため、待機時間がジョブの制限時間(350分)を
+      # 食い、本処理の途中で強制終了→DBアップロード中に消える事故が起きた。夜の実行は待つだけにする。
       - name: Sleep through the night
+        id: night
         run: |
           h=$(TZ=Asia/Tokyo date +%-H)
           if [ "$h" -ge 21 ] || [ "$h" -lt 5 ]; then
@@ -64,18 +58,21 @@ jobs:
             s=$((target - $(date +%s)))
             [ "$s" -gt 18000 ] && s=18000
             [ "$s" -gt 0 ] && echo "夜間のため${s}秒待機" && sleep "$s"
+            echo "slept=true" >> "$GITHUB_OUTPUT"
           fi
-          true
 
       - uses: actions/checkout@v4
+        if: steps.night.outputs.slept != 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.night.outputs.slept != 'true'
         with:
           python-version: "3.13"
           cache: "pip"
           cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
+        if: steps.night.outputs.slept != 'true'
         run: pip install -e .
 
       # PLAYWRIGHT_BROWSERS_PATH=0(パッケージ内固定パス)はWindowsタスクスケジューラ
@@ -85,10 +82,12 @@ jobs:
       # actions/cacheで使い回した方が実行時間を大きく短縮できる(毎回ゼロから
       # ダウンロード/インストールしていたのが実行時間の大半を占めていたため)。
       - name: Get Playwright version
+        if: steps.night.outputs.slept != 'true'
         id: playwright-version
         run: echo "version=$(python -c 'import playwright; print(playwright.__version__)')" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browsers
+        if: steps.night.outputs.slept != 'true'
         uses: actions/cache@v4
         id: playwright-cache
         with:
@@ -101,30 +100,41 @@ jobs:
       # `playwright install chromium`はハッシュ確認のみなのでキャッシュが正常なら
       # 数秒で終わるため、cache-hitでも毎回実行して自己修復させる。
       - name: Install Playwright browser
+        if: steps.night.outputs.slept != 'true'
         run: python -m playwright install chromium
 
       - name: Install Playwright OS dependencies only
         run: python -m playwright install-deps chromium
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        if: steps.night.outputs.slept != 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
 
       - name: Download latest DB snapshot
-        run: |
-          mkdir -p data
-          gh release download db-latest --repo "${{ github.repository }}" \
-            --pattern boatrace.db --output data/boatrace.db --clobber
+        id: download
+        if: steps.night.outputs.slept != 'true'
+        run: bash scripts/download_db.sh data/boatrace.db "${{ github.repository }}"
+
+      # 2026-11-12: cronはGitHub側に予定を落とされて何時間も起動しないことがあるため、
+      # 実行ごとに『次の実行』を自分で予約する(workflow_dispatch)。concurrencyで待ち行列は1件なので、
+      # 前の実行が終わった瞬間に次が始まる。cronは鎖が切れたときの保険として残す。
+      # 2026-11-18: DBの取得に失敗した実行は予約しない(以前は冒頭で予約していたため、DBが消えたとき
+      # 1分おきに失敗する実行が198回空回りした)。その場合はcron(15分おき)が再開役になる。
+      - name: Queue the next run (self-chaining)
+        if: always() && (steps.night.outputs.slept == 'true' || steps.download.outcome == 'success')
+        run: gh workflow run daily_predict.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
 
       - name: Run daily_predict.py
+        if: steps.download.outcome == 'success'
         run: python scripts/daily_predict.py
 
       - name: Upload updated DB snapshot
-        if: always()  # 途中で失敗しても、そこまでの進捗は保存しておく
-        run: |
-          gh release upload db-latest data/boatrace.db --repo "${{ github.repository }}" --clobber
+        # 途中で失敗しても、そこまでの進捗は保存しておく(ただしDBを正しく取得できた実行だけ)
+        if: always() && steps.download.outcome == 'success'
+        run: bash scripts/upload_db.sh data/boatrace.db "${{ github.repository }}"
 
       # 2026-11-12: 先読み検証(買える時点のオッズ→確定払戻)の集計をMacのループからクラウドに移した。
       # 結果はログに出し、リリース db-latest に forward-report.txt として置く(Macが不要)。
       - name: Forward-test report
-        if: always()
+        if: always() && steps.download.outcome == 'success'
+        continue-on-error: true
         run: |
           python scripts/forward_test.py data/boatrace.db | tee forward-report.txt
           gh release upload db-latest forward-report.txt --repo "${{ github.repository }}" --clobber
