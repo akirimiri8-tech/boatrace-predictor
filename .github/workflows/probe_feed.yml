@@ -14,9 +14,7 @@ jobs:
           import os, json, httpx, datetime
           base, tok = os.environ["ODDS_FEED_URL"].rstrip("/"), os.environ["ODDS_FEED_TOKEN"]
           today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
-          res = httpx.get(f"https://boatraceopenapi.github.io/api/v1/{today[:4]}/{today}.json", timeout=30).json()
-          races = [r for r in res.get("races", res if isinstance(res, list) else []) if isinstance(r, dict)]
-          print("Open API races today:", len(races))
+          races = [{"race_stadium_number": 4, "race_number": n} for n in (10, 11, 12)] + [{"race_stadium_number": 17, "race_number": 11}]
           checked = 0
           for r in races:
               st = r.get("race_stadium_number") or r.get("stadium_number"); rn = r.get("race_number") or r.get("number")
