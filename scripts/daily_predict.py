@@ -262,7 +262,10 @@ def _fetch_and_save_one_minute(race_id: int, info: dict, target_date) -> None:
 
     t0 = _now_jst()
     try:
-        exacta = fetch_exacta_odds(info["stadium"], str(target_date), info["number"])
+        # 専用スレッドなので、配信側の記録を待ってもメインの見回りは止まらない
+        exacta = fetch_exacta_odds(
+            info["stadium"], str(target_date), info["number"], minutes_before=1, wait_seconds=30
+        )
     except Exception as e:
         logger.warning(f"  1分前の2連単オッズ取得失敗(race_id={race_id}): {e}")
         return
@@ -342,7 +345,9 @@ def _sweep_snapshots(session, odds_client, target_date, snap_pending: dict) -> N
             # 2連単(全30通り)も同じ時点で記録する。静的HTMLなのでPlaywrightは使わない。
             # 失敗しても単勝の記録や予想は止めない。
             try:
-                exacta = fetch_exacta_odds(info["stadium"], str(target_date), info["number"])
+                exacta = fetch_exacta_odds(
+                    info["stadium"], str(target_date), info["number"], minutes_before=t // 60
+                )
                 if exacta:
                     save_exacta_odds_snapshot(
                         session, race_id, t // 60, now.isoformat(timespec="seconds"), exacta

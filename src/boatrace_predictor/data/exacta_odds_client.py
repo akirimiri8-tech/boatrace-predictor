@@ -91,20 +91,28 @@ def parse_exacta_odds(html: str) -> dict[str, float]:
 # 接続先と合言葉は環境変数で渡す(コードやリポジトリには置かない)。未設定なら従来どおり直接取得する。
 _FEED_URL_ENV = "ODDS_FEED_URL"
 _FEED_TOKEN_ENV = "ODDS_FEED_TOKEN"
-# 配信側は締切前の決まった時点で記録する。呼び出し側は「いま」のオッズとして時刻を付けて保存するので、
-# 古い記録を返すと別時点のオッズが紛れ込む。新しい記録だけを採用し、まだ無ければ少し待つ。
+# 配信側は締切前の決まった時点(12・7・2・1分前)で記録する。呼び出し側がどの時点かを指定すれば、
+# その時点の記録をそのまま返す。待たない(メインの見回りを止めない)のが既定。
+# 2026-11-18: 当初は記録が無いと毎回30秒待つ作りで、1レースずつ順番に回すメインの見回りが
+# 記録の無いレースのたびに止まり、単勝オッズの取得や予想が遅れるおそれがあった。
+# 時点の指定が無い呼び出しでは、古い記録を「いま」のオッズとして返さないよう新しいものだけを使う。
 _FEED_MAX_AGE_SECONDS = 60.0
-_FEED_WAIT_SECONDS = 30.0
 _FEED_POLL_SECONDS = 3.0
 _JST = timezone(timedelta(hours=9))
 
 
-def _latest_fresh_feed_odds(snapshots: list[dict[str, Any]], now: datetime, max_age: float) -> dict[str, float]:
-    """配信APIの記録のうち、max_age秒以内に取られた最新のものを {'1-2': 3.5, ...} で返す。無ければ空。"""
+def _pick_feed_odds(
+    snapshots: list[dict[str, Any]], now: datetime, minutes_before: int | None
+) -> dict[str, float]:
+    """配信APIの記録から1つ選び {'1-2': 3.5, ...} で返す。無ければ空。
+    minutes_before 指定時はその時点の記録、無指定時は60秒以内に取られた最新の記録。"""
     best: tuple[datetime, dict[str, Any]] | None = None
     for snap in snapshots:
         captured = datetime.fromisoformat(snap["captured_at"])
-        if (now - captured).total_seconds() > max_age:
+        if minutes_before is not None:
+            if snap.get("label") != f"{minutes_before}m":
+                continue
+        elif (now - captured).total_seconds() > _FEED_MAX_AGE_SECONDS:
             continue
         if best is None or captured > best[0]:
             best = (captured, snap["odds"])
@@ -113,24 +121,44 @@ def _latest_fresh_feed_odds(snapshots: list[dict[str, Any]], now: datetime, max_
     return {k: float(v) for k, v in best[1].items() if v is not None}
 
 
-def _fetch_from_feed(base_url: str, token: str, stadium_number: int, race_date: str, race_number: int) -> dict[str, float]:
+def _fetch_from_feed(
+    base_url: str,
+    token: str,
+    stadium_number: int,
+    race_date: str,
+    race_number: int,
+    minutes_before: int | None,
+    wait_seconds: float,
+) -> dict[str, float]:
     params = {"date": race_date.replace("-", ""), "venue": stadium_number, "race": race_number, "type": "exacta"}
-    deadline = time.monotonic() + _FEED_WAIT_SECONDS
-    with httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=15) as client:
+    deadline = time.monotonic() + wait_seconds
+    with httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=10) as client:
         while True:
             resp = client.get(base_url.rstrip("/") + "/v1/odds", params=params)
             resp.raise_for_status()
-            odds = _latest_fresh_feed_odds(resp.json()["snapshots"], datetime.now(_JST), _FEED_MAX_AGE_SECONDS)
+            odds = _pick_feed_odds(resp.json()["snapshots"], datetime.now(_JST), minutes_before)
             if odds or time.monotonic() >= deadline:
                 return odds
             time.sleep(_FEED_POLL_SECONDS)
 
 
-def fetch_exacta_odds(stadium_number: int, race_date: str, race_number: int, client: httpx.Client | None = None) -> dict[str, float]:
-    """race_date は 'YYYY-MM-DD' または 'YYYYMMDD'。"""
+def fetch_exacta_odds(
+    stadium_number: int,
+    race_date: str,
+    race_number: int,
+    client: httpx.Client | None = None,
+    *,
+    minutes_before: int | None = None,
+    wait_seconds: float = 0.0,
+) -> dict[str, float]:
+    """race_date は 'YYYY-MM-DD' または 'YYYYMMDD'。
+    minutes_before / wait_seconds は配信APIから読むときだけ意味を持つ(どの時点の記録か、
+    まだ無いとき何秒まで待つか)。待つのは専用スレッドなど、止まっても他に響かない所だけにする。"""
     feed_url, feed_token = os.environ.get(_FEED_URL_ENV), os.environ.get(_FEED_TOKEN_ENV)
     if feed_url and feed_token:
-        return _fetch_from_feed(feed_url, feed_token, stadium_number, race_date, race_number)
+        return _fetch_from_feed(
+            feed_url, feed_token, stadium_number, race_date, race_number, minutes_before, wait_seconds
+        )
     params = {"rno": race_number, "jcd": f"{stadium_number:02d}", "hd": race_date.replace("-", "")}
     own = client is None
     client = client or httpx.Client(headers=_HEADERS, timeout=30)

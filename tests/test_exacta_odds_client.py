@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from boatrace_predictor.data.exacta_odds_client import _latest_fresh_feed_odds, parse_exacta_odds
+from boatrace_predictor.data.exacta_odds_client import _pick_feed_odds, parse_exacta_odds
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "odds2tf_exacta_table.html"
 
@@ -37,20 +37,29 @@ def test_returns_empty_for_unrelated_html() -> None:
 _NOW = datetime(2026, 11, 18, 19, 24, 30, tzinfo=timezone(timedelta(hours=9)))
 
 
-def _snap(captured_at: str, odds: dict) -> dict:
-    return {"captured_at": captured_at, "odds": odds}
+def _snap(label: str, captured_at: str, odds: dict) -> dict:
+    return {"label": label, "captured_at": captured_at, "odds": odds}
 
 
-def test_feed_uses_latest_fresh_snapshot() -> None:
+def test_feed_picks_snapshot_for_requested_time_point() -> None:
     snaps = [
-        _snap("2026-11-18T19:24:00+09:00", {"1-2": 3.0}),
-        _snap("2026-11-18T19:24:20+09:00", {"1-2": 2.8, "1-3": None}),
+        _snap("12m", "2026-11-18T19:12:00+09:00", {"1-2": 3.0}),
+        _snap("7m", "2026-11-18T19:17:00+09:00", {"1-2": 2.8, "1-3": None}),
     ]
     # 欠場などで値の無い並びは含めない(直接取得のときと同じ扱い)
-    assert _latest_fresh_feed_odds(snaps, _NOW, 60) == {"1-2": 2.8}
+    assert _pick_feed_odds(snaps, _NOW, 7) == {"1-2": 2.8}
+    # 見回りが窓の後半に来ても、その時点の記録なら古くても使う
+    assert _pick_feed_odds(snaps, _NOW, 12) == {"1-2": 3.0}
 
 
-def test_feed_ignores_stale_snapshot() -> None:
-    # 5分前の記録を「いま」のオッズとして保存してしまわないこと
-    snaps = [_snap("2026-11-18T19:19:00+09:00", {"1-2": 3.0})]
-    assert _latest_fresh_feed_odds(snaps, _NOW, 60) == {}
+def test_feed_returns_empty_when_time_point_not_recorded_yet() -> None:
+    # 2分前の記録がまだ無いのに、7分前の記録を2分前として返さないこと
+    snaps = [_snap("7m", "2026-11-18T19:24:00+09:00", {"1-2": 2.8})]
+    assert _pick_feed_odds(snaps, _NOW, 2) == {}
+
+
+def test_feed_without_time_point_uses_only_fresh_snapshot() -> None:
+    fresh = [_snap("7m", "2026-11-18T19:24:00+09:00", {"1-2": 2.8})]
+    stale = [_snap("7m", "2026-11-18T19:19:00+09:00", {"1-2": 3.0})]
+    assert _pick_feed_odds(fresh, _NOW, None) == {"1-2": 2.8}
+    assert _pick_feed_odds(stale, _NOW, None) == {}
