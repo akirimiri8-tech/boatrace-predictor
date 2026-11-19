@@ -14,7 +14,7 @@ jobs:
           import os, json, httpx, datetime
           base, tok = os.environ["ODDS_FEED_URL"].rstrip("/"), os.environ["ODDS_FEED_TOKEN"]
           today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
-          races = [{"race_stadium_number": 4, "race_number": n} for n in (10, 11, 12)] + [{"race_stadium_number": 17, "race_number": 11}]
+          races = [{"race_stadium_number": s, "race_number": n} for s, n in ((17, 10), (1, 1), (24, 7), (1, 9))]
           checked = 0
           for r in races:
               st = r.get("race_stadium_number") or r.get("stadium_number"); rn = r.get("race_number") or r.get("number")
@@ -24,7 +24,7 @@ jobs:
               print(f"venue={st} race={rn} status={resp.status_code}")
               if resp.status_code != 200:
                   print(resp.text[:300]); checked += 1
-                  if checked >= 3: break
+                  if checked >= 4: break
                   continue
               j = resp.json()
               snaps = j.get("snapshots", [])
@@ -38,4 +38,4 @@ jobs:
               except Exception: pass
               print("  official exacta payout (Open API):", pay)
               checked += 1
-              if checked >= 3: break
+              if checked >= 4: break
