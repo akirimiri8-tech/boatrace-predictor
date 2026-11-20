@@ -159,6 +159,10 @@ def fetch_exacta_odds(
         return _fetch_from_feed(
             feed_url, feed_token, stadium_number, race_date, race_number, minutes_before, wait_seconds
         )
+    # 2026-11-20: 公式サイトは自動アクセスを拒否(403)している。クラウド実行で配信APIが未設定のときは
+    # 公式サイトに取りに行かず、何も記録しない(新しい配信APIをつなぐまでの空き期間)。
+    if client is None and os.environ.get("GITHUB_ACTIONS") == "true":
+        return {}
     params = {"rno": race_number, "jcd": f"{stadium_number:02d}", "hd": race_date.replace("-", "")}
     own = client is None
     client = client or httpx.Client(headers=_HEADERS, timeout=30)
