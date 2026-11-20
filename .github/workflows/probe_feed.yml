@@ -14,7 +14,7 @@ jobs:
           import os, json, httpx, datetime
           base, tok = os.environ["ODDS_FEED_URL"].rstrip("/"), os.environ["ODDS_FEED_TOKEN"]
           today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y%m%d")
-          races = [{"race_stadium_number": s, "race_number": n} for s, n in ((17, 10), (1, 1), (24, 7), (1, 9))]
+          races = [{"race_stadium_number": s, "race_number": n} for s, n in ((13, 2), (21, 6), (17, 3), (22, 2))]
           checked = 0
           for r in races:
               st = r.get("race_stadium_number") or r.get("stadium_number"); rn = r.get("race_number") or r.get("number")
